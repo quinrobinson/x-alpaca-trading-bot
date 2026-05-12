@@ -245,3 +245,18 @@ def signal_to_dict(signal: Signal) -> dict[str, Any]:
     data["expiration"] = signal.expiration.isoformat()
     data["posted_at"] = signal.posted_at.isoformat()
     return data
+
+
+def parse_result_to_journal_dict(result: ParseResult) -> dict[str, Any]:
+    """Serialize ParseResult for x_posts.parse_result JSONB column.
+
+    Intentionally omits raw_response — too verbose for the per-row snapshot;
+    if you need the raw text it's in the application logs.
+    """
+    return {
+        "signal": signal_to_dict(result.signal) if result.signal else None,
+        "parse_version": result.parse_version,
+        "model": result.model,
+        "latency_ms": result.latency_ms,
+        "error": result.error,
+    }

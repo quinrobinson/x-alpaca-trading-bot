@@ -40,11 +40,11 @@ The complete build specification lives in `X_ALPACA_OPTIONS_HANDOFF.md` at the p
 
 | Field | Value |
 |---|---|
-| Current phase | Phase 2 — parser + X stream built and unit-tested; live X connect + DB-write-timing gates still deferred |
+| Current phase | Phase 2 — 4/5 gates verified locally; only live X connect (gate 2.a) remains |
 | Last completed phase | Phase 1 — tagged `phase-1-complete` (commit 2ded7c2). All 5 acceptance gates pass on local Postgres. |
 | Last session date | 2026-05-12 |
-| Open issues | X_BEARER_TOKEN + X_TARGET_ACCOUNT_ID still empty. Phase 2 gate 2.a (live X connect) blocked. Phase 2 gate 2.d (DB write ≤1s) blocked on a minimal `journal.write_raw_post()` not yet built. |
-| Next action | Either (a) implement minimal journal.write_raw_post + verify Phase 2 gate 2.d locally, (b) provide X creds to attempt gate 2.a, or (c) proceed to Phase 3 |
+| Open issues | X_BEARER_TOKEN + X_TARGET_ACCOUNT_ID still empty — gate 2.a (live X stream connect) cannot run until creds provided. |
+| Next action | (a) Provide X creds and run gate 2.a to earn `phase-2-complete` tag, or (b) proceed to Phase 3 (data_service + validator) and circle back to gate 2.a later. |
 
 ---
 
@@ -231,6 +231,7 @@ Migration runner in `db.py` applies new SQL files in order. Never modify existin
 | 2026-05-12 | Phase 1 | Git init, package scaffold (config/db/main + stubs), schema SQL, paper-mode guard tests (5/5 pass). DB-touching gates 3–5 pending DATABASE_URL. |
 | 2026-05-12 | Phase 2 | parser.py (Signal dataclass, prompt v1, parse_post returning ParseResult with metadata). x_stream.py (tweepy v2 filtered stream wrapper, on_post callback, health tracking). 24/24 tests pass incl. ≥90% accuracy meta-test. Live X stream + x_posts DB write deferred. |
 | 2026-05-12 | Phase 1 verify | Stood up local Postgres 16, created `x_alpaca_trading_bot` DB, fixed config.py `load_dotenv(override=True)` so .env wins over inherited shell vars. Gates 3/4/5 all pass. Tagged `phase-1-complete` on commit 2ded7c2. |
+| 2026-05-12 | Phase 2 verify | Built minimal `journal.insert_raw_post()` + `parser.parse_result_to_journal_dict()` helper. 3 integration tests against local Postgres pass; insert latency p50=1ms / max=7ms (gate 2.d budget is 1000ms). Gate 2.a remains blocked on X creds — no `phase-2-complete` tag yet. |
 
 ---
 
