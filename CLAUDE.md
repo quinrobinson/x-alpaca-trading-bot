@@ -40,11 +40,11 @@ The complete build specification lives in `X_ALPACA_OPTIONS_HANDOFF.md` at the p
 
 | Field | Value |
 |---|---|
-| Current phase | Phase 1 — Scaffolding complete; DB gates 3–5 pending DATABASE_URL |
-| Last completed phase | None (Phase 1 not yet tagged — awaiting DB gate verification) |
+| Current phase | Phase 2 — parser + X stream built and unit-tested; live X connect + DB write deferred |
+| Last completed phase | None tagged yet — Phase 1 DB gates 3–5 and Phase 2 DB/stream gates pending DATABASE_URL and X creds |
 | Last session date | 2026-05-12 |
-| Open issues | DATABASE_URL not yet provided; cannot verify migrations end-to-end |
-| Next action | Provision Supabase (or local Postgres), fill .env, run `python -m x_alpaca_trading_bot.main`, then tag `phase-1-complete` |
+| Open issues | DATABASE_URL empty; X_BEARER_TOKEN + X_TARGET_ACCOUNT_ID empty. Both phases have deferred gates waiting on these. |
+| Next action | Either (a) provision Postgres + fill DB env to verify Phase 1/2 DB gates and tag, or (b) proceed to Phase 3 (data_service + validator) |
 
 ---
 
@@ -229,6 +229,7 @@ Migration runner in `db.py` applies new SQL files in order. Never modify existin
 |---|---|---|
 | — | — | Project initialized, CLAUDE.md created |
 | 2026-05-12 | Phase 1 | Git init, package scaffold (config/db/main + stubs), schema SQL, paper-mode guard tests (5/5 pass). DB-touching gates 3–5 pending DATABASE_URL. |
+| 2026-05-12 | Phase 2 | parser.py (Signal dataclass, prompt v1, parse_post returning ParseResult with metadata). x_stream.py (tweepy v2 filtered stream wrapper, on_post callback, health tracking). 24/24 tests pass incl. ≥90% accuracy meta-test. Live X stream + x_posts DB write deferred. |
 
 ---
 
