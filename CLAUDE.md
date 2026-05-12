@@ -40,11 +40,11 @@ The complete build specification lives in `X_ALPACA_OPTIONS_HANDOFF.md` at the p
 
 | Field | Value |
 |---|---|
-| Current phase | Phase 3 — complete; all 4 Phase 3 gates verified including real-API integration |
-| Last completed phase | Phase 3. Phase 2 gate 2.a still pending X creds; Phase 1 tagged `phase-1-complete` (commit 2ded7c2). |
+| Current phase | Phase 4 — complete; all 3 gates verified (unit tests pass, backtest produces correct results, zero I/O imports). |
+| Last completed phase | Phase 4. Phases 1 and 3 tagged. Phase 2 gate 2.a still pending X creds. |
 | Last session date | 2026-05-12 |
-| Open issues | (1) X_BEARER_TOKEN + X_TARGET_ACCOUNT_ID still placeholders — blocks Phase 2 gate 2.a. (2) Polygon VIX endpoint may return None on your plan tier (logged warning, not fatal). (3) IV rank / percentile set to None until we build 252-day IV history. |
-| Next action | Phase 4 — strategy.py (trailing stop ratchet + hard exits, pure function, no I/O). Or come back to gate 2.a once X creds are available. |
+| Open issues | (1) X_BEARER_TOKEN + X_TARGET_ACCOUNT_ID still placeholders — blocks Phase 2 gate 2.a. (2) Polygon VIX endpoint may return None on your plan tier. (3) IV rank / percentile set to None until we build 252-day IV history. |
+| Next action | Phase 5 — risk_manager.py (kill switches, daily P&L tracker from fills, consecutive-loss counter). Or come back to gate 2.a once X creds are available. |
 
 ---
 
@@ -233,6 +233,7 @@ Migration runner in `db.py` applies new SQL files in order. Never modify existin
 | 2026-05-12 | Phase 1 verify | Stood up local Postgres 16, created `x_alpaca_trading_bot` DB, fixed config.py `load_dotenv(override=True)` so .env wins over inherited shell vars. Gates 3/4/5 all pass. Tagged `phase-1-complete` on commit 2ded7c2. |
 | 2026-05-12 | Phase 2 verify | Built minimal `journal.insert_raw_post()` + `parser.parse_result_to_journal_dict()` helper. 3 integration tests against local Postgres pass; insert latency p50=1ms / max=7ms (gate 2.d budget is 1000ms). Gate 2.a remains blocked on X creds — no `phase-2-complete` tag yet. |
 | 2026-05-12 | Phase 3 | data_service.py (Alpaca options quotes, Polygon Greeks/IV snapshots, Alpaca IEX bars, pandas-ta indicators, sector heatmap). validator.py with 5 gates (time_age, market_open, contract_exists, spread, price_deviation). journal.insert_signal extension. 48/48 tests pass; integration tests hit real APIs. End-to-end validate() latency: mean 148ms, max 318ms vs 3000ms budget. Tag pending — see commits below. |
+| 2026-05-12 | Phase 4 | strategy.py (Position dataclass, RATCHET_TABLE, evaluate() with 4 hard exits — stop/15:55/DTE/stale). scripts/backtest_signals.py CLI for CSV replay. 37 new tests (30 strategy + 7 backtest); 85/85 across all phases. AST-based isolation test confirms strategy imports nothing from alpaca/tweepy/anthropic/psycopg/httpx/pandas. |
 
 ---
 
