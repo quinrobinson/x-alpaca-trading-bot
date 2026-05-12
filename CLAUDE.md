@@ -40,11 +40,11 @@ The complete build specification lives in `X_ALPACA_OPTIONS_HANDOFF.md` at the p
 
 | Field | Value |
 |---|---|
-| Current phase | Phase 5 — complete; all 3 gates verified. Tagged `phase-5-complete`. |
-| Last completed phase | Phase 5. Phases 1, 3, 4 also tagged. Phase 2 gate 2.a still pending X creds. |
+| Current phase | Phase 6 — executor built; automated gates green; 5 destructive gates pending operator-run smoke. |
+| Last completed phase | Phase 5 tagged. Phases 1, 3, 4, 5 tagged. Phase 6 commit landed; tag waits on `phase-6-complete` after the manual smoke. |
 | Last session date | 2026-05-12 |
-| Open issues | (1) X_BEARER_TOKEN + X_TARGET_ACCOUNT_ID still placeholders — blocks Phase 2 gate 2.a. (2) Polygon VIX endpoint may return None on your plan tier. (3) IV rank / percentile set to None until we build 252-day IV history. |
-| Next action | Phase 6 — executor.py (Alpaca paper order submission + lifecycle, trailing stop modification, 15:55 flatten, startup reconciliation). Or come back to gate 2.a once X creds are available. |
+| Open issues | (1) X_BEARER_TOKEN + X_TARGET_ACCOUNT_ID still placeholders — blocks Phase 2 gate 2.a. (2) Phase 6 destructive acceptance gates (place/fill/modify/reconcile/flatten) need `scripts/executor_manual_smoke.py` run during market hours. (3) Polygon VIX may return None on plan tier. (4) IV rank / percentile None until 252-day history exists. |
+| Next action | Run `scripts/executor_manual_smoke.py SPY <strike> <expiry> call` during market hours to clear Phase 6 destructive gates and tag `phase-6-complete`. Then Phase 7 — orchestration in main.py. |
 
 ---
 
@@ -235,6 +235,7 @@ Migration runner in `db.py` applies new SQL files in order. Never modify existin
 | 2026-05-12 | Phase 3 | data_service.py (Alpaca options quotes, Polygon Greeks/IV snapshots, Alpaca IEX bars, pandas-ta indicators, sector heatmap). validator.py with 5 gates (time_age, market_open, contract_exists, spread, price_deviation). journal.insert_signal extension. 48/48 tests pass; integration tests hit real APIs. End-to-end validate() latency: mean 148ms, max 318ms vs 3000ms budget. Tag pending — see commits below. |
 | 2026-05-12 | Phase 4 | strategy.py (Position dataclass, RATCHET_TABLE, evaluate() with 4 hard exits — stop/15:55/DTE/stale). scripts/backtest_signals.py CLI for CSV replay. 37 new tests (30 strategy + 7 backtest); 85/85 across all phases. AST-based isolation test confirms strategy imports nothing from alpaca/tweepy/anthropic/psycopg/httpx/pandas. |
 | 2026-05-12 | Phase 5 | risk_manager.py (SessionState/RiskDecision, evaluate() pure logic for 4 kill switches: daily_loss / consecutive_losses / x_stream_disconnected / alpaca_disconnected). SQL helpers realized_pnl_today() + consecutive_loss_count() against trades. journal.insert_event() for the events table. evaluate_and_log() convenience writes a row on every decision. 33 new tests (21 unit + 12 integration); 118/118 overall. |
+| 2026-05-12 | Phase 6 | executor.py with PaperOrder/PaperFill/OpenPosition/ReconciliationSnapshot and an Executor class wrapping Alpaca TradingClient. Primitives: submit_limit_buy / submit_stop_sell / submit_market_sell / wait_for_fill / cancel_order / modify_stop / list_open_orders / list_open_positions / flatten_all / reconcile / is_at_or_past_close. journal extended with insert_order (upsert by alpaca_order_id) + insert_fill. scripts/executor_manual_smoke.py walks the destructive gates with operator confirmation. 23 new tests (20 unit + 3 read-only integration); 141/141 overall. Tag pending operator manual-smoke run. |
 
 ---
 

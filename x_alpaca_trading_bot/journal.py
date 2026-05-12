@@ -1,8 +1,10 @@
-"""journal — DB writes for the bot. Phase 2: x_posts. Phase 3: signals. Phase 5: events.
+"""journal — DB writes for the bot.
 
-This module owns every INSERT/UPDATE against the database. Later phases extend
-it with `insert_order`, `insert_fill`, `write_snapshot`, etc. Telegram alerts
-also live here per spec §2.2.
+Phase 2: x_posts. Phase 3: signals. Phase 5: events. Phase 6: orders + fills.
+
+This module owns every INSERT/UPDATE against the database. Later phases add
+indicator_snapshots, trades, pnl_snapshots. Telegram alerts also live here
+per spec §2.2.
 """
 
 from __future__ import annotations
@@ -137,6 +139,91 @@ def insert_event(
                 message,
                 json.dumps(_jsonable(context)) if context is not None else None,
             ),
+        )
+        row = cur.fetchone()
+    conn.commit()
+    assert row is not None
+    return int(row[0])
+
+
+def insert_order(
+    conn: psycopg.Connection,
+    *,
+    signal_id: int | None,
+    alpaca_order_id: str,
+    submitted_at: datetime,
+    symbol: str,
+    side: str,
+    qty: int,
+    order_type: str,
+    limit_price: Decimal | None,
+    stop_price: Decimal | None,
+    status: str,
+    raw: dict[str, Any],
+) -> int:
+    """Insert a row into orders; return the row id.
+
+    Upserts on alpaca_order_id (UNIQUE) so retries during reconciliation
+    don't duplicate rows. Status + raw payload are refreshed on conflict.
+    """
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            INSERT INTO orders
+                (signal_id, alpaca_order_id, submitted_at, symbol, side, qty,
+                 order_type, limit_price, stop_price, status, raw)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            ON CONFLICT (alpaca_order_id) DO UPDATE
+              SET status = EXCLUDED.status,
+                  raw    = EXCLUDED.raw
+            RETURNING id
+            """,
+            (
+                signal_id,
+                alpaca_order_id,
+                submitted_at,
+                symbol,
+                side,
+                qty,
+                order_type,
+                limit_price,
+                stop_price,
+                status,
+                json.dumps(_jsonable(raw)),
+            ),
+        )
+        row = cur.fetchone()
+    conn.commit()
+    assert row is not None
+    return int(row[0])
+
+
+def insert_fill(
+    conn: psycopg.Connection,
+    *,
+    order_id: int,
+    filled_at: datetime,
+    symbol: str,
+    side: str,
+    qty: int,
+    fill_price: Decimal,
+    commission: Decimal = Decimal(0),
+) -> int:
+    """Insert a row into fills; return the row id.
+
+    order_id is the local journal row id from insert_order, NOT alpaca's
+    UUID. The orchestrator looks up the local id after upserting the
+    order, then inserts the fill linked to it.
+    """
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            INSERT INTO fills
+                (order_id, filled_at, symbol, side, qty, fill_price, commission)
+            VALUES (%s, %s, %s, %s, %s, %s, %s)
+            RETURNING id
+            """,
+            (order_id, filled_at, symbol, side, qty, fill_price, commission),
         )
         row = cur.fetchone()
     conn.commit()
