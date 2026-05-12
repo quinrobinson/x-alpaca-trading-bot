@@ -1,10 +1,10 @@
 """journal — DB writes for the bot.
 
 Phase 2: x_posts. Phase 3: signals. Phase 5: events. Phase 6: orders + fills.
+Phase 7: indicator_snapshots + trades.
 
 This module owns every INSERT/UPDATE against the database. Later phases add
-indicator_snapshots, trades, pnl_snapshots. Telegram alerts also live here
-per spec §2.2.
+pnl_snapshots. Telegram alerts also live here per spec §2.2.
 """
 
 from __future__ import annotations
@@ -224,6 +224,133 @@ def insert_fill(
             RETURNING id
             """,
             (order_id, filled_at, symbol, side, qty, fill_price, commission),
+        )
+        row = cur.fetchone()
+    conn.commit()
+    assert row is not None
+    return int(row[0])
+
+
+def insert_indicator_snapshot(
+    conn: psycopg.Connection,
+    *,
+    signal_id: int,
+    ts: datetime,
+    snapshot_type: str,
+    delta: Decimal | None = None,
+    gamma: Decimal | None = None,
+    theta: Decimal | None = None,
+    vega: Decimal | None = None,
+    iv: Decimal | None = None,
+    iv_rank: Decimal | None = None,
+    iv_percentile: Decimal | None = None,
+    rsi_14: Decimal | None = None,
+    macd: Decimal | None = None,
+    macd_signal: Decimal | None = None,
+    vwap: Decimal | None = None,
+    ema_9: Decimal | None = None,
+    ema_21: Decimal | None = None,
+    atr_14: Decimal | None = None,
+    bb_position: Decimal | None = None,
+    options_volume: int | None = None,
+    open_interest: int | None = None,
+    put_call_ratio: Decimal | None = None,
+    bid_ask_spread_pct: Decimal | None = None,
+    vix: Decimal | None = None,
+    spy_vs_ema21: str | None = None,
+    sector_etf_trend: str | None = None,
+    option_bid: Decimal | None = None,
+    option_ask: Decimal | None = None,
+    option_mid: Decimal | None = None,
+    underlying_price: Decimal | None = None,
+) -> int:
+    """Insert a row into indicator_snapshots; return the new id.
+
+    snapshot_type is one of: 'entry', 'monitor', 'exit'. All indicator
+    fields are nullable — missing values become NULL per spec §4.7
+    ("if a data source is unavailable, write null with an event log
+    entry, don't crash").
+    """
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            INSERT INTO indicator_snapshots
+                (signal_id, ts, snapshot_type,
+                 delta, gamma, theta, vega,
+                 iv, iv_rank, iv_percentile,
+                 rsi_14, macd, macd_signal, vwap, ema_9, ema_21, atr_14, bb_position,
+                 options_volume, open_interest, put_call_ratio, bid_ask_spread_pct,
+                 vix, spy_vs_ema21, sector_etf_trend,
+                 option_bid, option_ask, option_mid, underlying_price)
+            VALUES (%s, %s, %s,
+                    %s, %s, %s, %s,
+                    %s, %s, %s,
+                    %s, %s, %s, %s, %s, %s, %s, %s,
+                    %s, %s, %s, %s,
+                    %s, %s, %s,
+                    %s, %s, %s, %s)
+            RETURNING id
+            """,
+            (
+                signal_id, ts, snapshot_type,
+                delta, gamma, theta, vega,
+                iv, iv_rank, iv_percentile,
+                rsi_14, macd, macd_signal, vwap, ema_9, ema_21, atr_14, bb_position,
+                options_volume, open_interest, put_call_ratio, bid_ask_spread_pct,
+                vix, spy_vs_ema21, sector_etf_trend,
+                option_bid, option_ask, option_mid, underlying_price,
+            ),
+        )
+        row = cur.fetchone()
+    conn.commit()
+    assert row is not None
+    return int(row[0])
+
+
+def insert_trade(
+    conn: psycopg.Connection,
+    *,
+    signal_id: int | None,
+    opened_at: datetime,
+    closed_at: datetime,
+    ticker: str,
+    option_type: str,
+    strike: Decimal,
+    expiration: Any,         # date
+    entry_price: Decimal,
+    exit_price: Decimal,
+    qty: int,
+    exit_reason: str,
+    max_gain_pct: Decimal | None = None,
+    max_loss_pct: Decimal | None = None,
+) -> int:
+    """Insert a row into trades on position close; return the new id.
+
+    gross_pnl, pnl_pct, hold_minutes are derived here rather than supplied
+    by the caller, so the math lives in one place.
+    """
+    gross_pnl = (exit_price - entry_price) * Decimal(qty)
+    if entry_price > 0:
+        pnl_pct = (exit_price - entry_price) / entry_price
+    else:
+        pnl_pct = Decimal(0)
+    hold_minutes = int((closed_at - opened_at).total_seconds() / 60)
+
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            INSERT INTO trades
+                (signal_id, opened_at, closed_at, ticker, option_type, strike,
+                 expiration, entry_price, exit_price, qty, gross_pnl, pnl_pct,
+                 exit_reason, hold_minutes, max_gain_pct, max_loss_pct)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            RETURNING id
+            """,
+            (
+                signal_id, opened_at, closed_at, ticker, option_type, strike,
+                expiration, entry_price, exit_price, qty, gross_pnl, pnl_pct,
+                exit_reason, hold_minutes, max_gain_pct, max_loss_pct,
+            ),
         )
         row = cur.fetchone()
     conn.commit()

@@ -40,11 +40,11 @@ The complete build specification lives in `X_ALPACA_OPTIONS_HANDOFF.md` at the p
 
 | Field | Value |
 |---|---|
-| Current phase | Phase 6 — executor built; automated gates green; 5 destructive gates pending operator-run smoke. |
-| Last completed phase | Phase 5 tagged. Phases 1, 3, 4, 5 tagged. Phase 6 commit landed; tag waits on `phase-6-complete` after the manual smoke. |
+| Current phase | Phase 7 — indicator snapshots + trade close writer complete; all 3 automated gates verified. Tag `phase-7-complete` pending only the live cadence demonstration (which a Phase-7+ orchestrator will produce). |
+| Last completed phase | Phase 7. Phases 1, 3, 4, 5 tagged. Phase 6 commit landed; tag waits on manual smoke. |
 | Last session date | 2026-05-12 |
-| Open issues | (1) X_BEARER_TOKEN + X_TARGET_ACCOUNT_ID still placeholders — blocks Phase 2 gate 2.a. (2) Phase 6 destructive acceptance gates (place/fill/modify/reconcile/flatten) need `scripts/executor_manual_smoke.py` run during market hours. (3) Polygon VIX may return None on plan tier. (4) IV rank / percentile None until 252-day history exists. |
-| Next action | Run `scripts/executor_manual_smoke.py SPY <strike> <expiry> call` during market hours to clear Phase 6 destructive gates and tag `phase-6-complete`. Then Phase 7 — orchestration in main.py. |
+| Open issues | (1) X_BEARER_TOKEN + X_TARGET_ACCOUNT_ID still placeholders — blocks Phase 2 gate 2.a. (2) Phase 6 destructive gates (place/fill/modify/reconcile/flatten) need `scripts/executor_manual_smoke.py` run during market hours. (3) Polygon VIX may return None on plan tier. (4) IV rank / percentile None until 252-day history exists. |
+| Next action | Build the orchestrator (next phase per spec is Phase 8 — FastAPI + WebSocket; but you may want orchestration in main.py first so the bot can actually run). Or run the Phase 6 manual smoke to clear that tag. |
 
 ---
 
@@ -236,6 +236,7 @@ Migration runner in `db.py` applies new SQL files in order. Never modify existin
 | 2026-05-12 | Phase 4 | strategy.py (Position dataclass, RATCHET_TABLE, evaluate() with 4 hard exits — stop/15:55/DTE/stale). scripts/backtest_signals.py CLI for CSV replay. 37 new tests (30 strategy + 7 backtest); 85/85 across all phases. AST-based isolation test confirms strategy imports nothing from alpaca/tweepy/anthropic/psycopg/httpx/pandas. |
 | 2026-05-12 | Phase 5 | risk_manager.py (SessionState/RiskDecision, evaluate() pure logic for 4 kill switches: daily_loss / consecutive_losses / x_stream_disconnected / alpaca_disconnected). SQL helpers realized_pnl_today() + consecutive_loss_count() against trades. journal.insert_event() for the events table. evaluate_and_log() convenience writes a row on every decision. 33 new tests (21 unit + 12 integration); 118/118 overall. |
 | 2026-05-12 | Phase 6 | executor.py with PaperOrder/PaperFill/OpenPosition/ReconciliationSnapshot and an Executor class wrapping Alpaca TradingClient. Primitives: submit_limit_buy / submit_stop_sell / submit_market_sell / wait_for_fill / cancel_order / modify_stop / list_open_orders / list_open_positions / flatten_all / reconcile / is_at_or_past_close. journal extended with insert_order (upsert by alpaca_order_id) + insert_fill. scripts/executor_manual_smoke.py walks the destructive gates with operator confirmation. 23 new tests (20 unit + 3 read-only integration); 141/141 overall. Tag pending operator manual-smoke run. |
+| 2026-05-12 | Phase 7 | snapshot.py (SnapshotContext, TrackedPosition, SnapshotScheduler, capture_snapshot, close_trade). journal extended with insert_indicator_snapshot + insert_trade. MarketDataProvider protocol gains get_underlying_price; DataService implements it via Alpaca IEX latest quote. capture_snapshot wraps every data fetch with try/except → null + event log row. close_trade writes exit snapshot + trades row + unregisters from scheduler. 25 new tests (19 scheduler unit + 6 capture/close integration); 166/166 overall. Fixed prior integration fixtures to clean tables in FK-correct order. |
 
 ---
 

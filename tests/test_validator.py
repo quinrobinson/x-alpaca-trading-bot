@@ -83,6 +83,9 @@ class FakeProvider:
             vix=None, spy_vs_ema21=None, qqq_vs_ema21=None, sector_etf_trend={},
         )
 
+    def get_underlying_price(self, ticker: str) -> Decimal | None:
+        return None
+
 
 def _good_quote(*, ask: Decimal = Decimal("2.55"), bid: Decimal = Decimal("2.45")) -> Quote:
     mid = (ask + bid) / Decimal(2)

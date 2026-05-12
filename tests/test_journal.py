@@ -51,8 +51,12 @@ def conn() -> Iterator[psycopg.Connection]:
     db.run_migrations(c, deploy_dir)
 
     # Clean dependent tables before each test for deterministic state.
-    # signals FKs to x_posts, so delete in dependency order.
+    # Order matters — child tables first to satisfy FK constraints.
     with c.cursor() as cur:
+        cur.execute("DELETE FROM indicator_snapshots")
+        cur.execute("DELETE FROM trades")
+        cur.execute("DELETE FROM fills")
+        cur.execute("DELETE FROM orders")
         cur.execute("DELETE FROM signals")
         cur.execute("DELETE FROM x_posts")
     c.commit()

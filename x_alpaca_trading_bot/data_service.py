@@ -98,6 +98,7 @@ class MarketDataProvider(Protocol):
     def get_iv_data(self, contract_symbol: str) -> IVData: ...
     def get_indicators(self, ticker: str, now: datetime) -> Indicators: ...
     def get_market_context(self, now: datetime) -> MarketContext: ...
+    def get_underlying_price(self, ticker: str) -> Decimal | None: ...
 
 
 # ---- OCC contract symbol -----------------------------------------------------
@@ -312,6 +313,25 @@ class DataService:
         except Exception as exc:  # noqa: BLE001
             logger.warning("alpaca bars %s failed: %s", ticker, exc)
             return pd.DataFrame()
+
+    def get_underlying_price(self, ticker: str) -> Decimal | None:
+        """Latest mid-quote for the underlying stock. None on failure."""
+        from alpaca.data.enums import DataFeed
+        from alpaca.data.requests import StockLatestQuoteRequest
+        try:
+            req = StockLatestQuoteRequest(symbol_or_symbols=ticker, feed=DataFeed.IEX)
+            resp = self._alpaca_stocks.get_stock_latest_quote(req)
+            q = resp.get(ticker) if isinstance(resp, dict) else None
+            if q is None:
+                return None
+            bid = Decimal(str(q.bid_price)) if getattr(q, "bid_price", 0) else None
+            ask = Decimal(str(q.ask_price)) if getattr(q, "ask_price", 0) else None
+            if bid and ask:
+                return (bid + ask) / Decimal(2)
+            return bid or ask
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("get_underlying_price(%s) failed: %s", ticker, exc)
+            return None
 
     def _fetch_vix(self, now: datetime) -> Decimal | None:
         """Best-effort VIX fetch from Polygon. Returns None on failure."""
