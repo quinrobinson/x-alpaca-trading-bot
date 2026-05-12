@@ -71,10 +71,12 @@ class Config:
         Pass an explicit `env_file` to scope tests to a known file; otherwise
         the default search behavior of python-dotenv is used.
         """
+        # override=True so .env wins over inherited (often empty) shell vars.
+        # In production there is no .env file, so this is a no-op there.
         if env_file is not None:
-            load_dotenv(env_file)
+            load_dotenv(env_file, override=True)
         else:
-            load_dotenv()
+            load_dotenv(override=True)
 
         missing = [v for v in REQUIRED_VARS if not os.environ.get(v)]
         if missing:
