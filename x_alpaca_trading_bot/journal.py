@@ -1,4 +1,4 @@
-"""journal — DB writes for the bot. Phase 2: x_posts. Phase 3 adds signals.
+"""journal — DB writes for the bot. Phase 2: x_posts. Phase 3: signals. Phase 5: events.
 
 This module owns every INSERT/UPDATE against the database. Later phases extend
 it with `insert_order`, `insert_fill`, `write_snapshot`, etc. Telegram alerts
@@ -104,3 +104,54 @@ def insert_signal(
     conn.commit()
     assert row is not None
     return int(row[0])
+
+
+def insert_event(
+    conn: psycopg.Connection,
+    *,
+    ts: datetime,
+    severity: str,
+    category: str,
+    message: str,
+    context: dict[str, Any] | None = None,
+) -> int:
+    """Insert a row into the events table; return the new id.
+
+    Used by risk_manager.evaluate_and_log() and by the orchestrator for
+    kill-switch trips, connection events, errors, and other system events.
+
+    severity: 'info' | 'warning' | 'error' | 'critical'
+    category: 'risk' | 'kill_switch' | 'fill' | 'system' | 'connection' | ...
+    """
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            INSERT INTO events (ts, severity, category, message, context)
+            VALUES (%s, %s, %s, %s, %s)
+            RETURNING id
+            """,
+            (
+                ts,
+                severity,
+                category,
+                message,
+                json.dumps(_jsonable(context)) if context is not None else None,
+            ),
+        )
+        row = cur.fetchone()
+    conn.commit()
+    assert row is not None
+    return int(row[0])
+
+
+def _jsonable(value: Any) -> Any:
+    """Coerce Decimals/datetimes to JSON-friendly primitives recursively."""
+    if isinstance(value, Decimal):
+        return str(value)
+    if isinstance(value, datetime):
+        return value.isoformat()
+    if isinstance(value, dict):
+        return {k: _jsonable(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_jsonable(v) for v in value]
+    return value
