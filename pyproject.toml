@@ -22,6 +22,8 @@ dependencies = [
     "python-dotenv>=1.0",
     "pydantic>=2.9",
     "httpx>=0.27",
+    "pandas>=2.2",
+    "pandas-ta-classic>=0.4",  # Phase 3 indicator math (maintained pandas-ta fork)
 ]
 
 [project.optional-dependencies]

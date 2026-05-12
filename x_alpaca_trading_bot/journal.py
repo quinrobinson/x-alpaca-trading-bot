@@ -1,11 +1,8 @@
-"""journal — DB writes for the bot. Phase 2 partial: x_posts only.
+"""journal — DB writes for the bot. Phase 2: x_posts. Phase 3 adds signals.
 
 This module owns every INSERT/UPDATE against the database. Later phases extend
-it with `insert_signal`, `insert_order`, `insert_fill`, `write_snapshot`, etc.
-Telegram alerts also live here per spec §2.2.
-
-Phase 2 implements only the x_posts path so Phase 2 gate 2.d ("posts written
-to DB within 1 second of receipt") can be verified.
+it with `insert_order`, `insert_fill`, `write_snapshot`, etc. Telegram alerts
+also live here per spec §2.2.
 """
 
 from __future__ import annotations
@@ -13,6 +10,7 @@ from __future__ import annotations
 import json
 import logging
 from datetime import datetime
+from decimal import Decimal
 from typing import Any
 
 import psycopg
@@ -52,6 +50,55 @@ def insert_raw_post(
             RETURNING id
             """,
             (posted_at, received_at, post_id, post_text, payload, actionable),
+        )
+        row = cur.fetchone()
+    conn.commit()
+    assert row is not None
+    return int(row[0])
+
+
+def insert_signal(
+    conn: psycopg.Connection,
+    *,
+    x_post_id: int,
+    parsed_at: datetime,
+    ticker: str,
+    option_type: str,
+    strike: Decimal,
+    expiration: "datetime | Any",  # date or datetime — caller passes date
+    posted_price: Decimal,
+    live_ask: Decimal | None,
+    taken: bool,
+    rejection_reason: str | None,
+    gate_results: dict[str, Any],
+) -> int:
+    """Insert a row into signals; return the new id.
+
+    Every validated (or rejected) signal gets a row here regardless of outcome,
+    so the post-trade analysis can compare what we skipped vs. what we took.
+    """
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            INSERT INTO signals
+                (x_post_id, parsed_at, ticker, option_type, strike, expiration,
+                 posted_price, live_ask, taken, rejection_reason, gate_results)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            RETURNING id
+            """,
+            (
+                x_post_id,
+                parsed_at,
+                ticker,
+                option_type,
+                strike,
+                expiration,
+                posted_price,
+                live_ask,
+                taken,
+                rejection_reason,
+                json.dumps(gate_results),
+            ),
         )
         row = cur.fetchone()
     conn.commit()

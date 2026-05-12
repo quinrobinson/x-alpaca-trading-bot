@@ -50,8 +50,10 @@ def conn() -> Iterator[psycopg.Connection]:
     deploy_dir = Path(__file__).resolve().parent.parent / "deploy"
     db.run_migrations(c, deploy_dir)
 
-    # Clean x_posts before each test for deterministic state.
+    # Clean dependent tables before each test for deterministic state.
+    # signals FKs to x_posts, so delete in dependency order.
     with c.cursor() as cur:
+        cur.execute("DELETE FROM signals")
         cur.execute("DELETE FROM x_posts")
     c.commit()
 
@@ -129,6 +131,67 @@ def test_insert_actionable_with_signal_payload(conn: psycopg.Connection) -> None
     assert payload["model"] == "claude-x"
     assert payload["error"] is None
     assert "raw_response" not in payload  # we strip it for storage
+
+
+def test_insert_signal_round_trip(conn: psycopg.Connection) -> None:
+    """Phase 3: signals.gate_results JSONB round-trips and `taken` is honored."""
+    # First, create an x_posts row this signal can FK to.
+    posted_at = datetime(2026, 5, 12, 14, 30, tzinfo=timezone.utc)
+    received_at = datetime(2026, 5, 12, 14, 30, 1, tzinfo=timezone.utc)
+    x_post_id = journal.insert_raw_post(
+        conn,
+        post_id="signal-test-1",
+        post_text="$AAPL 6/20 $185c @ 2.50",
+        posted_at=posted_at,
+        received_at=received_at,
+        parse_result=None,
+        actionable=True,
+    )
+
+    gate_results = {
+        "accepted": False,
+        "rejection_reason": "price_deviation",
+        "gates": [
+            {"name": "time_age", "passed": True, "reason": None, "measured": 30.0},
+            {"name": "market_open", "passed": True, "reason": None, "measured": None},
+            {"name": "contract_exists", "passed": True, "reason": None, "measured": None},
+            {"name": "spread", "passed": True, "reason": None, "measured": "0.02"},
+            {"name": "price_deviation", "passed": False, "reason": "deviation 20.00% >= 10.00%", "measured": "0.20"},
+        ],
+    }
+
+    signal_id = journal.insert_signal(
+        conn,
+        x_post_id=x_post_id,
+        parsed_at=posted_at,
+        ticker="AAPL",
+        option_type="call",
+        strike=Decimal("185.00"),
+        expiration=date(2026, 6, 20),
+        posted_price=Decimal("2.50"),
+        live_ask=Decimal("3.00"),
+        taken=False,
+        rejection_reason="price_deviation",
+        gate_results=gate_results,
+    )
+    assert signal_id > 0
+
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT taken, rejection_reason, ticker, strike, live_ask, gate_results"
+            " FROM signals WHERE id = %s",
+            (signal_id,),
+        )
+        row = cur.fetchone()
+    assert row is not None
+    taken, rejection, ticker, strike, live_ask, gates_payload = row
+    assert taken is False
+    assert rejection == "price_deviation"
+    assert ticker == "AAPL"
+    assert strike == Decimal("185.00")
+    assert live_ask == Decimal("3.00")
+    assert gates_payload["rejection_reason"] == "price_deviation"
+    assert len(gates_payload["gates"]) == 5
 
 
 def test_duplicate_post_id_upserts_preserves_id(conn: psycopg.Connection) -> None:
