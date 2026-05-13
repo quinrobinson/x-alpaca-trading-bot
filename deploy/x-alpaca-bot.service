@@ -29,7 +29,10 @@ ExecStart=@INSTALL_DIR@/.venv/bin/uvicorn api.main:build_production_app \
 
 Restart=on-failure
 RestartSec=5s
-TimeoutStopSec=30s
+# 60s gives the orchestrator's graceful shutdown (cancel heartbeat task,
+# request_shutdown event, ~5s tick-loop exit, 10s thread join, uvicorn
+# in-flight request drain) room to complete without systemd SIGKILL.
+TimeoutStopSec=60s
 
 # Logging: capture stdout/stderr into the journal so `journalctl -u x-alpaca-bot`
 # works out of the box.

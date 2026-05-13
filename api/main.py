@@ -132,6 +132,11 @@ def create_app(
             "open_positions": (
                 len(orchestrator._open_positions) if orchestrator is not None else 0
             ),
+            "active_switches": (
+                sorted(orchestrator._state.active_switches)
+                if orchestrator is not None else []
+            ),
+            "x_stream_disabled": _x_stream_disabled(orchestrator),
         }
 
     app.include_router(positions_router.router)
@@ -179,6 +184,7 @@ async def _heartbeat_loop(
                     sorted(orchestrator._state.active_switches)
                     if orchestrator is not None else []
                 ),
+                "x_stream_disabled": _x_stream_disabled(orchestrator),
             }
             await ws_manager.broadcast("system.heartbeat", payload)
         except Exception:  # noqa: BLE001
@@ -187,6 +193,14 @@ async def _heartbeat_loop(
             await asyncio.sleep(interval_seconds)
         except asyncio.CancelledError:
             raise
+
+
+def _x_stream_disabled(orchestrator: Any | None) -> bool:
+    """Read the operator's DISABLE_X_STREAM flag off the orchestrator's config."""
+    if orchestrator is None:
+        return False
+    cfg = getattr(orchestrator, "_cfg", None)
+    return bool(getattr(cfg, "disable_x_stream", False))
 
 
 # ---- Production entrypoint ------------------------------------------------

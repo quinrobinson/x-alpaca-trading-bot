@@ -22,9 +22,26 @@ export default function StatusBar({
     ? Math.min(100, Math.max(0, (Math.max(0, -realizedPnl) / dailyLossLimit) * 100))
     : 0
 
-  const switchesOn = killSwitches.length > 0
+  // Operator paused via DISABLE_X_STREAM doesn't trip kill switches — those
+  // mean something's actually wrong. Drop the X switch from the "is the bot
+  // paused?" check when the operator intentionally disabled the stream.
+  const xDisabled = health?.x_stream_disabled === true
+  const fatalSwitches = killSwitches.filter(
+    (s) => !(xDisabled && s === 'x_stream_disconnected'),
+  )
+  const switchesOn = fatalSwitches.length > 0
   const botStatus = switchesOn ? 'paused (kill switch)' : 'running'
   const botColor = switchesOn ? 'text-rose-400' : 'text-emerald-400'
+
+  // Three states for the X stream chip:
+  //   "disabled" (amber)    — operator set DISABLE_X_STREAM=true
+  //   "down"     (rose)     — stall during market hours tripped the switch
+  //   "connected" (emerald) — heartbeats fresh
+  const xStreamLabel = xDisabled
+    ? { text: 'disabled', tone: 'text-amber-400' }
+    : killSwitches.includes('x_stream_disconnected')
+    ? { text: 'down', tone: 'text-rose-400' }
+    : { text: 'connected', tone: 'text-emerald-400' }
 
   return (
     <div className="bg-slate-900 border-b border-slate-800 px-4 py-3">
@@ -41,8 +58,8 @@ export default function StatusBar({
         </div>
         <div>
           <div className="text-[10px] uppercase text-slate-500">X stream</div>
-          <div className={`text-sm font-medium ${killSwitches.includes('x_stream_disconnected') ? 'text-rose-400' : 'text-emerald-400'}`}>
-            {killSwitches.includes('x_stream_disconnected') ? 'down' : 'connected'}
+          <div className={`text-sm font-medium ${xStreamLabel.tone}`}>
+            {xStreamLabel.text}
           </div>
         </div>
         <div>
