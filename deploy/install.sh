@@ -96,6 +96,10 @@ clone_or_update() {
         mkdir -p "$INSTALL_DIR"
         git clone "$REPO_URL" "$INSTALL_DIR"
     fi
+    # Modern git (>= 2.35.2) refuses to operate in a dir owned by another
+    # user. Mark our install dir as trusted before running fetch/checkout.
+    # System-level config; idempotent.
+    git config --system --add safe.directory "$INSTALL_DIR" 2>/dev/null || true
     cd "$INSTALL_DIR"
     echo "==> fetching ref $REPO_REF"
     git fetch --depth=1 origin "$REPO_REF"
