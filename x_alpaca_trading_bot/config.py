@@ -64,6 +64,9 @@ class Config:
     signal_stale_seconds: int
     price_deviation_pct: Decimal
 
+    # Operator switches
+    disable_x_stream: bool = False        # skip X stream connect + suppress x_stream kill switch
+
     @classmethod
     def load(cls, env_file: Path | str | None = None) -> "Config":
         """Read environment (and optional .env file) into a frozen Config.
@@ -104,4 +107,5 @@ class Config:
             max_fill_wait_seconds=int(os.environ.get("MAX_FILL_WAIT_SECONDS", "60")),
             signal_stale_seconds=int(os.environ.get("SIGNAL_STALE_SECONDS", "180")),
             price_deviation_pct=Decimal(os.environ.get("PRICE_DEVIATION_PCT", "0.10")),
+            disable_x_stream=os.environ.get("DISABLE_X_STREAM", "").lower() in ("1", "true", "yes"),
         )

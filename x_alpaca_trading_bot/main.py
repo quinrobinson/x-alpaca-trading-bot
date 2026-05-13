@@ -239,13 +239,22 @@ class Orchestrator:
     def _start_stream(self) -> None:
         """Wire up the X stream listener with our queue-push callback.
 
-        Any failure here (bad creds, network, tweepy version mismatch) is
+        If DISABLE_X_STREAM=true in config, skip the connect entirely and
+        don't trip the kill switch (operators set this when their X API
+        billing is in a CreditsDepleted state, for example).
+
+        Any other failure (bad creds, network, tweepy version mismatch) is
         caught and logged. The orchestrator runs in a degraded mode — no
         new signals arrive, but the API, snapshot scheduler, and position
         management all continue. The x_stream_disconnected kill switch
         will trip naturally once last_x_received_at goes stale during
         market hours, and that's the right signal to the operator.
         """
+        if self._cfg.disable_x_stream:
+            logger.info("x_stream disabled via config; skipping connect")
+            self._log_stream_disabled(reason="disabled_via_config")
+            return
+
         try:
             from x_alpaca_trading_bot.x_stream import make_listener
         except Exception as exc:  # noqa: BLE001
@@ -682,14 +691,26 @@ class Orchestrator:
         except Exception:  # noqa: BLE001
             logger.warning("get_clock failed; market_open=False")
 
+        # When the operator has explicitly disabled the X stream, suppress
+        # the x_stream_disconnected kill switch by keeping the heartbeat
+        # fresh and stripping it from active_switches if it was tripped
+        # before the operator flipped the flag.
+        last_x = self._state.last_x_received_at
+        active = self._state.active_switches
+        if self._cfg.disable_x_stream:
+            last_x = now
+            if "x_stream_disconnected" in active:
+                active = frozenset(active) - {"x_stream_disconnected"}
+                self._state = replace(self._state, active_switches=active)
+
         return risk_manager.SessionState(
             starting_equity=self._state.starting_equity,
             current_equity=self._state.starting_equity + realized,
             consecutive_losses=risk_manager.consecutive_loss_count(self._conn, before=now),
-            last_x_received_at=self._state.last_x_received_at,
+            last_x_received_at=last_x,
             last_alpaca_ok_at=self._state.last_alpaca_ok_at,
             market_open=market_open,
-            active_switches=self._state.active_switches,
+            active_switches=active,
         )
 
 
