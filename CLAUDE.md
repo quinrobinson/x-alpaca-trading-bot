@@ -40,11 +40,11 @@ The complete build specification lives in `X_ALPACA_OPTIONS_HANDOFF.md` at the p
 
 | Field | Value |
 |---|---|
-| Current phase | Phase 8 — FastAPI app + WebSocket fanout. All 4 acceptance gates verified automatically. |
-| Last completed phase | Phase 8. Tags: 1, 3, 4, 5, 7. Phase 7.5 (orchestration) + Phase 8 committed; phase-8-complete tag pending. |
+| Current phase | Phase 9 — React dashboard built and tested. Vite build green, 8/8 Vitest tests pass. |
+| Last completed phase | Phase 9. Tags: 1, 3, 4, 5, 7, 8, 9. Phase 6 destructive smoke + Phase 2.a live X connect still pending. |
 | Last session date | 2026-05-13 |
-| Open issues | (1) X_BEARER_TOKEN + X_TARGET_ACCOUNT_ID still placeholders — blocks Phase 2 gate 2.a. (2) Phase 6 destructive gates need `scripts/executor_manual_smoke.py` run during market hours. (3) Polygon VIX may return None on plan tier. (4) IV rank / percentile None until 252-day history exists. |
-| Next action | Phase 9 — React dashboard (connects to /ws + REST endpoints). Or run the Phase 6 manual smoke. |
+| Open issues | (1) X_BEARER_TOKEN + X_TARGET_ACCOUNT_ID still placeholders. (2) Phase 6 destructive gates need `scripts/executor_manual_smoke.py` run during market hours. (3) Polygon VIX may return None on plan tier. (4) IV rank / percentile None until 252-day history exists. |
+| Next action | Phase 10 — Deployment (DigitalOcean droplet for bot+API, Vercel for dashboard, systemd units, install.sh). Or fill X creds / run Phase 6 smoke. |
 
 ---
 
@@ -239,6 +239,7 @@ Migration runner in `db.py` applies new SQL files in order. Never modify existin
 | 2026-05-12 | Phase 7 | snapshot.py (SnapshotContext, TrackedPosition, SnapshotScheduler, capture_snapshot, close_trade). journal extended with insert_indicator_snapshot + insert_trade. MarketDataProvider protocol gains get_underlying_price; DataService implements it via Alpaca IEX latest quote. capture_snapshot wraps every data fetch with try/except → null + event log row. close_trade writes exit snapshot + trades row + unregisters from scheduler. 25 new tests (19 scheduler unit + 6 capture/close integration); 166/166 overall. Fixed prior integration fixtures to clean tables in FK-correct order. |
 | 2026-05-13 | Phase 7.5 | Orchestrator wired in main.py with PositionRecord, OrchestratorState, queue-based stream callback, tick() loop. Drains posts → parse → journal → validate → risk → submit entry → wait fill → place stop → register scheduler → entry snapshot. Per-tick: advance positions (ratchet → modify_stop, exit → close_position), take due snapshots, 15:55 ET flatten, risk pulse. Heartbeats updated from event.received_at on drain and from get_clock() success in build_session_state — orchestrator is self-healing on connection switches. 8 integration tests; 174/174 overall. |
 | 2026-05-13 | Phase 8 | api/ws_manager.py (connect/disconnect/broadcast/dispatch_threadsafe, drops dead clients, JSON-coerces Decimals + datetimes). api/main.py FastAPI app factory with lifespan: attaches loop to WSManager, wires orchestrator._broadcast → dispatch_threadsafe, runs heartbeat task (system.heartbeat every 30s), runs orchestrator in a background thread. REST endpoints: /healthz, /positions (from orchestrator state), /signals (DB query), /performance (trade log + win rate / profit factor stats). WS endpoint /ws echoes pings + pushes events. 24 new tests (11 ws_manager + 13 api); 198/198 overall. build_production_app() entrypoint for uvicorn. |
+| 2026-05-13 | Phase 9 | dashboard/ — Vite + React 19 + Tailwind v4. 5 panels (StatusBar, SignalFeed, PositionCard, MarketContext, PerformanceHistory). useWebSocket hook with exponential-backoff reconnect (500ms → 8s cap, resets on open). REST polling every 30s + WS events trigger immediate re-fetches. Hand-rolled equity-curve sparkline (no Recharts dep). 8 Vitest tests for the hook covering open/close/reconnect/backoff-reset/malformed-JSON/unmount-cleanup/send. `npm run build` ships a 66KB-gzipped JS bundle. |
 
 ---
 

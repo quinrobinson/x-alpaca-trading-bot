@@ -1,0 +1,14 @@
+@import "tailwindcss";
+
+/* Dashboard theme primitives — Tailwind v4 doesn't ship a config file by
+ * default; CSS variables are the preferred extension point. */
+:root {
+  --color-bg: oklch(0.12 0 0);
+  --color-card: oklch(0.18 0 0);
+  --color-border: oklch(0.28 0 0);
+  --color-positive: oklch(0.72 0.18 145);
+  --color-negative: oklch(0.66 0.22 30);
+}
+
+html, body, #root { height: 100%; }
+body { font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
