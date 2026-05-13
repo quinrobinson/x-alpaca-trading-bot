@@ -332,9 +332,12 @@ class Orchestrator:
 
     def _handle_post(self, event: _StreamEvent, now: datetime) -> None:
         """End-to-end: parse → validate → risk → submit entry → fill → stop."""
+        logger.info("handle_post id=%s text=%r", event.post_id, event.post_text[:120])
         # 1. Parse via Claude
         result = parse_post(event.post_text, event.posted_at, self._anthropic)
         actionable = result.signal is not None
+        logger.info("parsed id=%s actionable=%s parse_version=%s error=%s",
+                    event.post_id, actionable, result.parse_version, result.error)
         journal_payload = parse_result_to_journal_dict(result)
 
         x_post_id = journal.insert_raw_post(
@@ -374,6 +377,11 @@ class Orchestrator:
             taken=False,                             # may be flipped below
             rejection_reason=validation.rejection_reason,
             gate_results=validator.gate_results_to_dict(validation),
+        )
+        logger.info(
+            "validated signal_id=%s accepted=%s rejection=%s live_ask=%s elapsed=%.2fs",
+            signal_id, validation.accepted, validation.rejection_reason,
+            validation.live_ask, validation.elapsed_seconds,
         )
         self._broadcast("signal.validated", {
             "signal_id": signal_id, "accepted": validation.accepted,

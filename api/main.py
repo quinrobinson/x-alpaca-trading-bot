@@ -220,6 +220,15 @@ def build_production_app() -> FastAPI:
     from x_alpaca_trading_bot.main import Orchestrator
     from x_alpaca_trading_bot.snapshot import SnapshotScheduler
 
+    # Surface our module loggers in journalctl. Uvicorn doesn't configure
+    # the root logger, so without this, only WARNING+ gets through and we
+    # lose all the "processing post", "No quote for ...", and per-tick
+    # diagnostics that the orchestrator + data_service log at INFO.
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s %(levelname)s %(name)s %(message)s",
+    )
+
     cfg = Config.load()
     assert_paper_mode(cfg.alpaca_base_url)
 
