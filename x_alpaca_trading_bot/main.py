@@ -237,20 +237,48 @@ class Orchestrator:
     # ---- Stream lifecycle ---------------------------------------------
 
     def _start_stream(self) -> None:
-        """Wire up the X stream listener with our queue-push callback."""
+        """Wire up the X stream listener with our queue-push callback.
+
+        Any failure here (bad creds, network, tweepy version mismatch) is
+        caught and logged. The orchestrator runs in a degraded mode — no
+        new signals arrive, but the API, snapshot scheduler, and position
+        management all continue. The x_stream_disconnected kill switch
+        will trip naturally once last_x_received_at goes stale during
+        market hours, and that's the right signal to the operator.
+        """
         try:
             from x_alpaca_trading_bot.x_stream import make_listener
         except Exception as exc:  # noqa: BLE001
             logger.warning("x_stream not loaded; running without it: %s", exc)
+            self._log_stream_disabled(reason=f"import_failed: {exc!r}")
             return
 
-        self._stream_listener = make_listener(
-            bearer_token=self._cfg.x_bearer_token,
-            target_account_id=self._cfg.x_target_account_id,
-            on_post=self._on_x_post,
-        )
-        self._stream_listener.filter(threaded=True)
-        logger.info("x stream listener started")
+        try:
+            self._stream_listener = make_listener(
+                bearer_token=self._cfg.x_bearer_token,
+                target_account_id=self._cfg.x_target_account_id,
+                on_post=self._on_x_post,
+            )
+            self._stream_listener.filter(threaded=True)
+            logger.info("x stream listener started")
+        except Exception as exc:  # noqa: BLE001
+            # Bad bearer token, target id, network, or tweepy version drift.
+            # The bot keeps running; the kill switch will trip if no
+            # heartbeat arrives during market hours.
+            logger.warning("x_stream startup failed; running without it: %s", exc)
+            self._stream_listener = None
+            self._log_stream_disabled(reason=f"connect_failed: {exc!r}")
+
+    def _log_stream_disabled(self, *, reason: str) -> None:
+        try:
+            journal.insert_event(
+                self._conn, ts=datetime.now(timezone.utc),
+                severity="warning", category="x_stream",
+                message="x_stream_disabled",
+                context={"reason": reason},
+            )
+        except Exception:  # noqa: BLE001
+            logger.exception("failed to log x_stream_disabled event")
 
     def _stop_stream(self) -> None:
         listener = self._stream_listener
