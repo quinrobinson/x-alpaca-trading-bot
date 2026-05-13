@@ -190,6 +190,10 @@ main() {
     if [[ $UPDATE_ONLY -eq 1 ]]; then
         clone_or_update
         build_venv
+        # Always re-stamp the systemd unit on --update so changes to the
+        # template (TimeoutStopSec, ExecStart args, sandbox flags) actually
+        # land. install_systemd_unit is idempotent; daemon-reload is cheap.
+        install_systemd_unit
         fix_perms
         restart_service
         echo "update complete"
