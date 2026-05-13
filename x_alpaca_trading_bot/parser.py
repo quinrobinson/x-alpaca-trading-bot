@@ -24,7 +24,7 @@ from typing import Any, Literal, Protocol
 
 logger = logging.getLogger(__name__)
 
-PARSE_PROMPT_VERSION = "v1"
+PARSE_PROMPT_VERSION = "v2"  # v2: prompt now includes today's date for unambiguous expiration parsing
 DEFAULT_MODEL = "claude-sonnet-4-20250514"  # from X_ALPACA_OPTIONS_HANDOFF.md §2.2
 MAX_TOKENS = 512
 
@@ -64,18 +64,22 @@ class AnthropicClient(Protocol):
     messages: _AnthropicMessages
 
 
-SYSTEM_PROMPT = """You parse options-trade signals from X (Twitter) posts.
+SYSTEM_PROMPT_TEMPLATE = """You parse options-trade signals from X (Twitter) posts.
+
+Today's date is {today}. When the post mentions a bare month-day or weekday
+without a year (e.g. "6/20", "June 20", "Friday"), resolve it to the NEXT
+such occurrence on or after today's date — never default to a past year.
 
 Return ONLY a single JSON object on one line. No prose, no markdown fences.
 
 Schema:
-{
+{{
   "ticker": "AAPL",           // uppercase, no $ sign
   "option_type": "call"|"put",
   "strike": "185.00",         // string-formatted decimal
   "expiration": "2026-06-20", // ISO date YYYY-MM-DD
   "entry_price": "2.50"       // string-formatted decimal, the posted target option price
-}
+}}
 
 If the post is NOT a trade signal, OR any required field is missing, ambiguous,
 or contradicted by the post, return exactly:
@@ -85,18 +89,20 @@ Rules:
 - Ticker must be explicit ($AAPL, AAPL, TSLA). Slang names (e.g. "the spider" for SPY) → null.
 - option_type must be unambiguously "call" or "put". "c"/"call"/"calls" → call. "p"/"put"/"puts" → put.
 - Strike is the numeric option strike. Reject if absent or a range.
-- Expiration must resolve to a single calendar date. Phrases like "weekly", "monthly",
-  "0DTE", "Friday" without a clear date → null (ambiguous).
+- Expiration must resolve to a single calendar date. Phrases like "weekly",
+  "monthly", "0DTE" without a clear date → null (ambiguous). A bare weekday
+  ("Friday") with no week context → null. A weekday qualified by "this" or
+  "next" → resolve relative to today's date above.
 - entry_price is the OPTION premium target the poster is calling out, not the underlying price.
 - Multiple distinct signals in one post → null.
 - Pure commentary, news, polls, replies, retweets without a new signal → null.
 
-Examples:
+Examples (assume today is 2026-05-13):
 Input: "$AAPL 6/20 $185c @ 2.50"
-Output: {"ticker":"AAPL","option_type":"call","strike":"185","expiration":"2026-06-20","entry_price":"2.50"}
+Output: {{"ticker":"AAPL","option_type":"call","strike":"185","expiration":"2026-06-20","entry_price":"2.50"}}
 
 Input: "Looking at TSLA puts, 230 strike, June 6 expiry, entering at 4.20"
-Output: {"ticker":"TSLA","option_type":"put","strike":"230","expiration":"2026-06-06","entry_price":"4.20"}
+Output: {{"ticker":"TSLA","option_type":"put","strike":"230","expiration":"2026-06-06","entry_price":"4.20"}}
 
 Input: "SPY 450c looking good"
 Output: null
@@ -104,6 +110,14 @@ Output: null
 Input: "Market is wild today"
 Output: null
 """
+
+
+def _build_system_prompt(today: date) -> str:
+    return SYSTEM_PROMPT_TEMPLATE.format(today=today.isoformat())
+
+
+# Back-compat constant for tests that still reference SYSTEM_PROMPT.
+SYSTEM_PROMPT = _build_system_prompt(date(2026, 5, 13))
 
 
 def parse_post(
@@ -127,7 +141,9 @@ def parse_post(
         response = client.messages.create(
             model=model,
             max_tokens=MAX_TOKENS,
-            system=SYSTEM_PROMPT,
+            # Pass the post's own date as "today" so Claude resolves bare
+            # month-day inputs to the correct upcoming occurrence.
+            system=_build_system_prompt(posted_at.date()),
             messages=[{"role": "user", "content": post_text}],
         )
         raw = _extract_text(response)
