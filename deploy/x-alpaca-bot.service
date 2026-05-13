@@ -1,0 +1,49 @@
+# systemd unit for x-alpaca-trading-bot.
+#
+# Tokens (@VAR@) are substituted at install time by deploy/install.sh.
+# Hand-edit only if you know what you're doing — re-running install.sh
+# regenerates this file.
+
+[Unit]
+Description=x-alpaca-trading-bot (orchestrator + FastAPI)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=@SERVICE_USER@
+Group=@SERVICE_USER@
+WorkingDirectory=@INSTALL_DIR@
+
+# Load .env from the install dir. The file is owned by the service user
+# and should be chmod 600.
+EnvironmentFile=@INSTALL_DIR@/.env
+Environment="PATH=@INSTALL_DIR@/.venv/bin:/usr/local/bin:/usr/bin:/bin"
+Environment="PYTHONUNBUFFERED=1"
+
+ExecStart=@INSTALL_DIR@/.venv/bin/uvicorn api.main:build_production_app \
+    --factory \
+    --host 0.0.0.0 \
+    --port @API_PORT@ \
+    --log-level info
+
+Restart=on-failure
+RestartSec=5s
+TimeoutStopSec=30s
+
+# Logging: capture stdout/stderr into the journal so `journalctl -u x-alpaca-bot`
+# works out of the box.
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=x-alpaca-bot
+
+# Sandbox hardening — keep modest defaults so the bot can reach the network
+# and read .env but can't tamper with the rest of the system.
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ReadWritePaths=@INSTALL_DIR@
+
+[Install]
+WantedBy=multi-user.target

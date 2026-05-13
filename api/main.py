@@ -30,11 +30,13 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import threading
 from contextlib import asynccontextmanager
 from typing import Any
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi.middleware.cors import CORSMiddleware
 
 from api.routers import performance as performance_router
 from api.routers import positions as positions_router
@@ -50,9 +52,18 @@ def create_app(
     orchestrator: Any | None = None,
     run_orchestrator: bool = False,
     heartbeat_seconds: float = 30.0,
+    cors_origins: list[str] | None = None,
 ) -> FastAPI:
-    """Build a FastAPI app wired with the given orchestrator + DB conn."""
+    """Build a FastAPI app wired with the given orchestrator + DB conn.
+
+    `cors_origins` defaults to the comma-separated CORS_ORIGINS env var if
+    set, otherwise wildcards "*" for local dev. In production set it to
+    your Vercel dashboard origin, e.g. ["https://x-alpaca-bot.vercel.app"].
+    """
     ws_manager = WSManager()
+    if cors_origins is None:
+        raw = os.environ.get("CORS_ORIGINS", "*")
+        cors_origins = [o.strip() for o in raw.split(",") if o.strip()]
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
@@ -101,6 +112,13 @@ def create_app(
         title="x-alpaca-trading-bot",
         version="0.1.0",
         lifespan=lifespan,
+    )
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=cors_origins,
+        allow_credentials=True,
+        allow_methods=["*"],
+        allow_headers=["*"],
     )
     app.state.ws_manager = ws_manager
     app.state.orchestrator = orchestrator

@@ -5,6 +5,7 @@ import PositionCard from './components/PositionCard.jsx'
 import MarketContext from './components/MarketContext.jsx'
 import PerformanceHistory from './components/PerformanceHistory.jsx'
 import { useWebSocket } from './hooks/useWebSocket.js'
+import { apiUrl, wsUrl } from './config.js'
 
 /**
  * App — orchestrates the dashboard.
@@ -39,10 +40,10 @@ export default function App() {
   const fetchAll = useCallback(async () => {
     try {
       const [h, p, s, perf] = await Promise.all([
-        fetch('/healthz').then(r => r.ok ? r.json() : null),
-        fetch('/positions').then(r => r.ok ? r.json() : []),
-        fetch('/signals?limit=50').then(r => r.ok ? r.json() : []),
-        fetch('/performance').then(r => r.ok ? r.json() : null),
+        fetch(apiUrl('/healthz')).then(r => r.ok ? r.json() : null),
+        fetch(apiUrl('/positions')).then(r => r.ok ? r.json() : []),
+        fetch(apiUrl('/signals?limit=50')).then(r => r.ok ? r.json() : []),
+        fetch(apiUrl('/performance')).then(r => r.ok ? r.json() : null),
       ])
       if (h) setHealth(h)
       if (Array.isArray(p)) setPositions(p)
@@ -69,26 +70,26 @@ export default function App() {
         // Trigger a /signals refresh so the row's `taken` flag is current.
         // Bumps the "last signal" badge in the status bar immediately.
         setLastSignalTs(msg.ts)
-        fetch('/signals?limit=50').then(r => r.ok && r.json()).then(rows => {
+        fetch(apiUrl('/signals?limit=50')).then(r => r.ok && r.json()).then(rows => {
           if (Array.isArray(rows)) setSignals(rows.slice(0, SIGNAL_FEED_MAX))
         }).catch(() => {})
         break
       case 'trade.entered':
         // Refresh positions; new card should appear.
-        fetch('/positions').then(r => r.ok && r.json()).then(rows => {
+        fetch(apiUrl('/positions')).then(r => r.ok && r.json()).then(rows => {
           if (Array.isArray(rows)) setPositions(rows)
         }).catch(() => {})
         break
       case 'trade.stop_moved':
-        fetch('/positions').then(r => r.ok && r.json()).then(rows => {
+        fetch(apiUrl('/positions')).then(r => r.ok && r.json()).then(rows => {
           if (Array.isArray(rows)) setPositions(rows)
         }).catch(() => {})
         break
       case 'trade.exited':
         // Position closed — refresh both positions + performance.
         Promise.all([
-          fetch('/positions').then(r => r.ok && r.json()),
-          fetch('/performance').then(r => r.ok && r.json()),
+          fetch(apiUrl('/positions')).then(r => r.ok && r.json()),
+          fetch(apiUrl('/performance')).then(r => r.ok && r.json()),
         ]).then(([p, perf]) => {
           if (Array.isArray(p)) setPositions(p)
           if (perf) setPerformance(perf)
@@ -117,8 +118,7 @@ export default function App() {
     }
   }, [])
 
-  const wsUrl = `${window.location.protocol === 'https:' ? 'wss' : 'ws'}://${window.location.host}/ws`
-  const { status: wsStatus } = useWebSocket(wsUrl, { onEvent: handleWs })
+  const { status: wsStatus } = useWebSocket(wsUrl('/ws'), { onEvent: handleWs })
 
   // ---- Layout -----------------------------------------------------------
 
