@@ -102,9 +102,12 @@ clone_or_update() {
     git config --system --add safe.directory "$INSTALL_DIR" 2>/dev/null || true
     cd "$INSTALL_DIR"
     echo "==> fetching ref $REPO_REF"
-    git fetch --depth=1 origin "$REPO_REF"
-    git checkout "$REPO_REF"
-    git pull --ff-only origin "$REPO_REF"
+    git fetch origin "$REPO_REF"
+    # `reset --hard` is the right semantic for a deploy: we want the droplet
+    # to match origin exactly, not merge against whatever's local. This also
+    # works correctly across force-pushes (which `pull --ff-only` doesn't).
+    git checkout "$REPO_REF" 2>/dev/null || git checkout -B "$REPO_REF" "origin/$REPO_REF"
+    git reset --hard "origin/$REPO_REF"
 }
 
 build_venv() {
