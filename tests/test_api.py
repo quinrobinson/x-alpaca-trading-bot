@@ -363,6 +363,194 @@ def test_ws_reconnect_then_receives() -> None:
 
 # ---- Orchestrator wiring -------------------------------------------------
 
+# ---- /timeline -------------------------------------------------------------
+
+def test_timeline_empty(conn: psycopg.Connection) -> None:
+    orch = FakeOrchestrator()
+    app = create_app(conn=conn, orchestrator=orch, heartbeat_seconds=999)
+    with TestClient(app) as client:
+        r = client.get("/timeline")
+        assert r.status_code == 200
+        assert r.json() == []
+
+
+def test_timeline_classifies_kinds_correctly(conn: psycopg.Connection) -> None:
+    """All four `kind` values should round-trip from a populated DB."""
+    # 1. signal_unactionable: post with no signal row
+    journal.insert_raw_post(
+        conn,
+        post_id="post-noop",
+        post_text="just commentary, not a signal",
+        posted_at=datetime(2026, 5, 10, 13, 0, tzinfo=timezone.utc),
+        received_at=datetime(2026, 5, 10, 13, 0, 1, tzinfo=timezone.utc),
+        parse_result={"signal": None, "parse_version": "v2"},
+        actionable=False,
+    )
+
+    # 2. signal_rejected: post + signal taken=False
+    xid_rej = journal.insert_raw_post(
+        conn, post_id="post-rej",
+        post_text="$AAPL 6/20 $185c @ 2.50",
+        posted_at=datetime(2026, 5, 11, 14, 0, tzinfo=timezone.utc),
+        received_at=datetime(2026, 5, 11, 14, 0, 1, tzinfo=timezone.utc),
+        parse_result={"signal": {"ticker": "AAPL"}, "parse_version": "v2"},
+        actionable=True,
+    )
+    journal.insert_signal(
+        conn, x_post_id=xid_rej,
+        parsed_at=datetime(2026, 5, 11, 14, 0, 2, tzinfo=timezone.utc),
+        ticker="AAPL", option_type="call",
+        strike=Decimal("185.00"), expiration=date(2026, 6, 20),
+        posted_price=Decimal("2.50"), live_ask=Decimal("8.00"),
+        taken=False, rejection_reason="price_deviation",
+        gate_results={"accepted": False, "gates": []},
+    )
+
+    # 3. trade_closed: post + signal taken + trade row
+    xid_done = journal.insert_raw_post(
+        conn, post_id="post-done",
+        post_text="$TSLA 7/18 $230p @ 4.20",
+        posted_at=datetime(2026, 5, 12, 15, 0, tzinfo=timezone.utc),
+        received_at=datetime(2026, 5, 12, 15, 0, 1, tzinfo=timezone.utc),
+        parse_result={"signal": {"ticker": "TSLA"}, "parse_version": "v2"},
+        actionable=True,
+    )
+    sig_done = journal.insert_signal(
+        conn, x_post_id=xid_done,
+        parsed_at=datetime(2026, 5, 12, 15, 0, 2, tzinfo=timezone.utc),
+        ticker="TSLA", option_type="put",
+        strike=Decimal("230.00"), expiration=date(2026, 7, 18),
+        posted_price=Decimal("4.20"), live_ask=Decimal("4.25"),
+        taken=True, rejection_reason=None,
+        gate_results={"accepted": True, "gates": []},
+    )
+    journal.insert_trade(
+        conn, signal_id=sig_done,
+        opened_at=datetime(2026, 5, 12, 15, 1, tzinfo=timezone.utc),
+        closed_at=datetime(2026, 5, 12, 16, 30, tzinfo=timezone.utc),
+        ticker="TSLA", option_type="put",
+        strike=Decimal("230.00"), expiration=date(2026, 7, 18),
+        entry_price=Decimal("4.25"), exit_price=Decimal("5.50"),
+        qty=1, exit_reason="stop_loss",
+        max_gain_pct=Decimal("0.40"), max_loss_pct=Decimal("-0.05"),
+    )
+
+    # 4. position_open: post + signal taken + NO trade row yet
+    xid_open = journal.insert_raw_post(
+        conn, post_id="post-open",
+        post_text="$NVDA 6/27 $130c @ 3.10",
+        posted_at=datetime(2026, 5, 13, 16, 0, tzinfo=timezone.utc),
+        received_at=datetime(2026, 5, 13, 16, 0, 1, tzinfo=timezone.utc),
+        parse_result={"signal": {"ticker": "NVDA"}, "parse_version": "v2"},
+        actionable=True,
+    )
+    journal.insert_signal(
+        conn, x_post_id=xid_open,
+        parsed_at=datetime(2026, 5, 13, 16, 0, 2, tzinfo=timezone.utc),
+        ticker="NVDA", option_type="call",
+        strike=Decimal("130.00"), expiration=date(2026, 6, 27),
+        posted_price=Decimal("3.10"), live_ask=Decimal("3.15"),
+        taken=True, rejection_reason=None,
+        gate_results={"accepted": True, "gates": []},
+    )
+
+    orch = FakeOrchestrator()
+    app = create_app(conn=conn, orchestrator=orch, heartbeat_seconds=999)
+    with TestClient(app) as client:
+        rows = client.get("/timeline").json()
+
+    # Most recent first → NVDA, TSLA, AAPL, then commentary
+    assert [r["kind"] for r in rows] == [
+        "position_open", "trade_closed", "signal_rejected", "signal_unactionable",
+    ]
+    # NVDA card carries the originating tweet + signal context
+    nvda = rows[0]
+    assert nvda["post_text"] == "$NVDA 6/27 $130c @ 3.10"
+    assert nvda["signal"]["ticker"] == "NVDA"
+    assert nvda["signal"]["taken"] is True
+    assert nvda["trade"] is None
+    # TSLA closed trade carries the trade summary
+    tsla = rows[1]
+    assert tsla["trade"]["gross_pnl"] == "1.2500"
+    assert tsla["trade"]["exit_reason"] == "stop_loss"
+    assert tsla["trade"]["max_gain_pct"] == "0.4000"
+    # AAPL was rejected
+    aapl = rows[2]
+    assert aapl["signal"]["taken"] is False
+    assert aapl["signal"]["rejection_reason"] == "price_deviation"
+    # Non-signal post
+    noop = rows[3]
+    assert noop["signal"] is None
+    assert noop["post_text"] == "just commentary, not a signal"
+
+
+def test_timeline_excludes_rejected_when_requested(conn: psycopg.Connection) -> None:
+    xid = journal.insert_raw_post(
+        conn, post_id="rej-1",
+        post_text="$X 6/20 $5c @ 100",
+        posted_at=datetime(2026, 5, 11, 14, 0, tzinfo=timezone.utc),
+        received_at=datetime(2026, 5, 11, 14, 0, 1, tzinfo=timezone.utc),
+        parse_result=None, actionable=True,
+    )
+    journal.insert_signal(
+        conn, x_post_id=xid,
+        parsed_at=datetime(2026, 5, 11, 14, 0, 2, tzinfo=timezone.utc),
+        ticker="X", option_type="call",
+        strike=Decimal("5.00"), expiration=date(2026, 6, 20),
+        posted_price=Decimal("100.00"), live_ask=None,
+        taken=False, rejection_reason="contract_exists",
+        gate_results={"accepted": False, "gates": []},
+    )
+    orch = FakeOrchestrator()
+    app = create_app(conn=conn, orchestrator=orch, heartbeat_seconds=999)
+    with TestClient(app) as client:
+        with_rej = client.get("/timeline?include_rejected=true").json()
+        without = client.get("/timeline?include_rejected=false").json()
+    assert len(with_rej) == 1 and with_rej[0]["kind"] == "signal_rejected"
+    assert without == []
+
+
+# ---- /positions includes originating tweet --------------------------------
+
+def test_positions_includes_source_post(conn: psycopg.Connection) -> None:
+    xid = journal.insert_raw_post(
+        conn, post_id="open-1",
+        post_text="$AAPL 6/20 $185c @ 2.50",
+        posted_at=datetime(2026, 5, 13, 13, 30, tzinfo=timezone.utc),
+        received_at=datetime(2026, 5, 13, 13, 30, 1, tzinfo=timezone.utc),
+        parse_result=None, actionable=True,
+    )
+    signal_id = journal.insert_signal(
+        conn, x_post_id=xid,
+        parsed_at=datetime(2026, 5, 13, 13, 30, 2, tzinfo=timezone.utc),
+        ticker="AAPL", option_type="call",
+        strike=Decimal("185.00"), expiration=date(2026, 6, 20),
+        posted_price=Decimal("2.50"), live_ask=Decimal("2.55"),
+        taken=True, rejection_reason=None,
+        gate_results={"accepted": True, "gates": []},
+    )
+
+    orch = FakeOrchestrator()
+    orch._open_positions[signal_id] = _FakePosition(
+        signal_id=signal_id, ticker="AAPL", contract_symbol="AAPL260620C00185000",
+        option_type="call", strike=Decimal("185.00"), expiration=date(2026, 6, 20),
+        qty=1, entry_price=Decimal("2.55"),
+        opened_at=datetime(2026, 5, 13, 13, 30, 5, tzinfo=timezone.utc),
+        strategy_position=_FakeStrategyPosition(stop_price=Decimal("2.04"), ratchet_level=0),
+        stop_order_id="fake-1",
+    )
+
+    app = create_app(conn=conn, orchestrator=orch, heartbeat_seconds=999)
+    with TestClient(app) as client:
+        body = client.get("/positions").json()
+    assert len(body) == 1
+    assert body[0]["source_post"]["post_text"] == "$AAPL 6/20 $185c @ 2.50"
+    # Same instant regardless of TZ rendering — parse and compare epoch
+    from datetime import datetime as _dt
+    parsed = _dt.fromisoformat(body[0]["source_post"]["posted_at"])
+    assert parsed == datetime(2026, 5, 13, 13, 30, tzinfo=timezone.utc)
+
+
 # ---- /debug/inject-post ----------------------------------------------------
 
 def test_inject_post_disabled_when_token_unset(monkeypatch) -> None:

@@ -42,6 +42,7 @@ from api.routers import debug as debug_router
 from api.routers import performance as performance_router
 from api.routers import positions as positions_router
 from api.routers import signals as signals_router
+from api.routers import timeline as timeline_router
 from api.ws_manager import WSManager
 
 logger = logging.getLogger(__name__)
@@ -143,6 +144,7 @@ def create_app(
     app.include_router(positions_router.router)
     app.include_router(signals_router.router)
     app.include_router(performance_router.router)
+    app.include_router(timeline_router.router)
     app.include_router(debug_router.router)
 
     @app.websocket("/ws")
