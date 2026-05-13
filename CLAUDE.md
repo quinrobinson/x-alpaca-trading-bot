@@ -40,11 +40,11 @@ The complete build specification lives in `X_ALPACA_OPTIONS_HANDOFF.md` at the p
 
 | Field | Value |
 |---|---|
-| Current phase | Phase 7.5 — orchestrator wired in main.py. All modules connected end-to-end; 8/8 orchestrator tests + 174/174 full suite green. |
-| Last completed phase | Phase 7 tagged. Phase 7.5 orchestrator committed. Phase 6 + Phase 2.a gates still need manual / X-creds verification. |
+| Current phase | Phase 8 — FastAPI app + WebSocket fanout. All 4 acceptance gates verified automatically. |
+| Last completed phase | Phase 8. Tags: 1, 3, 4, 5, 7. Phase 7.5 (orchestration) + Phase 8 committed; phase-8-complete tag pending. |
 | Last session date | 2026-05-13 |
 | Open issues | (1) X_BEARER_TOKEN + X_TARGET_ACCOUNT_ID still placeholders — blocks Phase 2 gate 2.a. (2) Phase 6 destructive gates need `scripts/executor_manual_smoke.py` run during market hours. (3) Polygon VIX may return None on plan tier. (4) IV rank / percentile None until 252-day history exists. |
-| Next action | Phase 8 — FastAPI + WebSocket backend (now there's live state to broadcast). Or fill X creds and run a live smoke. |
+| Next action | Phase 9 — React dashboard (connects to /ws + REST endpoints). Or run the Phase 6 manual smoke. |
 
 ---
 
@@ -238,6 +238,7 @@ Migration runner in `db.py` applies new SQL files in order. Never modify existin
 | 2026-05-12 | Phase 6 | executor.py with PaperOrder/PaperFill/OpenPosition/ReconciliationSnapshot and an Executor class wrapping Alpaca TradingClient. Primitives: submit_limit_buy / submit_stop_sell / submit_market_sell / wait_for_fill / cancel_order / modify_stop / list_open_orders / list_open_positions / flatten_all / reconcile / is_at_or_past_close. journal extended with insert_order (upsert by alpaca_order_id) + insert_fill. scripts/executor_manual_smoke.py walks the destructive gates with operator confirmation. 23 new tests (20 unit + 3 read-only integration); 141/141 overall. Tag pending operator manual-smoke run. |
 | 2026-05-12 | Phase 7 | snapshot.py (SnapshotContext, TrackedPosition, SnapshotScheduler, capture_snapshot, close_trade). journal extended with insert_indicator_snapshot + insert_trade. MarketDataProvider protocol gains get_underlying_price; DataService implements it via Alpaca IEX latest quote. capture_snapshot wraps every data fetch with try/except → null + event log row. close_trade writes exit snapshot + trades row + unregisters from scheduler. 25 new tests (19 scheduler unit + 6 capture/close integration); 166/166 overall. Fixed prior integration fixtures to clean tables in FK-correct order. |
 | 2026-05-13 | Phase 7.5 | Orchestrator wired in main.py with PositionRecord, OrchestratorState, queue-based stream callback, tick() loop. Drains posts → parse → journal → validate → risk → submit entry → wait fill → place stop → register scheduler → entry snapshot. Per-tick: advance positions (ratchet → modify_stop, exit → close_position), take due snapshots, 15:55 ET flatten, risk pulse. Heartbeats updated from event.received_at on drain and from get_clock() success in build_session_state — orchestrator is self-healing on connection switches. 8 integration tests; 174/174 overall. |
+| 2026-05-13 | Phase 8 | api/ws_manager.py (connect/disconnect/broadcast/dispatch_threadsafe, drops dead clients, JSON-coerces Decimals + datetimes). api/main.py FastAPI app factory with lifespan: attaches loop to WSManager, wires orchestrator._broadcast → dispatch_threadsafe, runs heartbeat task (system.heartbeat every 30s), runs orchestrator in a background thread. REST endpoints: /healthz, /positions (from orchestrator state), /signals (DB query), /performance (trade log + win rate / profit factor stats). WS endpoint /ws echoes pings + pushes events. 24 new tests (11 ws_manager + 13 api); 198/198 overall. build_production_app() entrypoint for uvicorn. |
 
 ---
 
