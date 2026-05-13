@@ -60,10 +60,18 @@ class FakeOrchestrator:
     and _state shapes, so the FastAPI routes are agnostic to which is wired."""
 
     def __init__(self) -> None:
+        import queue
         self._open_positions: dict[int, _FakePosition] = {}
         self._state = _FakeOrchState()
         self._broadcast = lambda _e, _p: None  # replaced by lifespan
+        self._post_queue: queue.Queue = queue.Queue()
+        self.injected_posts: list[tuple[str, str, datetime]] = []
         self.shutdown_requested = False
+
+    def _on_x_post(self, post_id: str, post_text: str, posted_at: datetime) -> None:
+        """Records the call so tests can assert on it."""
+        self.injected_posts.append((post_id, post_text, posted_at))
+        self._post_queue.put((post_id, post_text, posted_at))
 
     def request_shutdown(self) -> None:
         self.shutdown_requested = True
@@ -354,6 +362,107 @@ def test_ws_reconnect_then_receives() -> None:
 
 
 # ---- Orchestrator wiring -------------------------------------------------
+
+# ---- /debug/inject-post ----------------------------------------------------
+
+def test_inject_post_disabled_when_token_unset(monkeypatch) -> None:
+    monkeypatch.delenv("DEBUG_INJECT_TOKEN", raising=False)
+    orch = FakeOrchestrator()
+    app = create_app(conn=None, orchestrator=orch, heartbeat_seconds=999)
+    with TestClient(app) as client:
+        r = client.post("/debug/inject-post", json={"post_text": "x"})
+        assert r.status_code == 503
+        assert "disabled" in r.json()["detail"]
+
+
+def test_inject_post_requires_auth_header(monkeypatch) -> None:
+    monkeypatch.setenv("DEBUG_INJECT_TOKEN", "supersecret")
+    orch = FakeOrchestrator()
+    app = create_app(conn=None, orchestrator=orch, heartbeat_seconds=999)
+    with TestClient(app) as client:
+        r = client.post("/debug/inject-post", json={"post_text": "x"})
+        assert r.status_code == 401
+
+
+def test_inject_post_rejects_wrong_token(monkeypatch) -> None:
+    monkeypatch.setenv("DEBUG_INJECT_TOKEN", "supersecret")
+    orch = FakeOrchestrator()
+    app = create_app(conn=None, orchestrator=orch, heartbeat_seconds=999)
+    with TestClient(app) as client:
+        r = client.post(
+            "/debug/inject-post",
+            headers={"Authorization": "Bearer wrong"},
+            json={"post_text": "x"},
+        )
+        assert r.status_code == 401
+
+
+def test_inject_post_pushes_to_orchestrator(monkeypatch) -> None:
+    monkeypatch.setenv("DEBUG_INJECT_TOKEN", "supersecret")
+    orch = FakeOrchestrator()
+    app = create_app(conn=None, orchestrator=orch, heartbeat_seconds=999)
+    with TestClient(app) as client:
+        r = client.post(
+            "/debug/inject-post",
+            headers={"Authorization": "Bearer supersecret"},
+            json={
+                "post_text": "$AAPL 6/20 $185c @ 2.50",
+                "post_id": "manual-test-1",
+                "posted_at": "2026-05-13T13:30:00Z",
+            },
+        )
+        assert r.status_code == 200, r.json()
+        body = r.json()
+        assert body["queued"] is True
+        assert body["post_id"] == "manual-test-1"
+        assert body["queue_depth"] == 1
+
+    assert len(orch.injected_posts) == 1
+    pid, text, posted_at = orch.injected_posts[0]
+    assert pid == "manual-test-1"
+    assert text == "$AAPL 6/20 $185c @ 2.50"
+    assert posted_at.isoformat() == "2026-05-13T13:30:00+00:00"
+
+
+def test_inject_post_generates_post_id_when_missing(monkeypatch) -> None:
+    monkeypatch.setenv("DEBUG_INJECT_TOKEN", "supersecret")
+    orch = FakeOrchestrator()
+    app = create_app(conn=None, orchestrator=orch, heartbeat_seconds=999)
+    with TestClient(app) as client:
+        r = client.post(
+            "/debug/inject-post",
+            headers={"Authorization": "Bearer supersecret"},
+            json={"post_text": "$AAPL test"},
+        )
+        assert r.status_code == 200
+        assert r.json()["post_id"].startswith("manual-")
+
+
+def test_inject_post_rejects_missing_post_text(monkeypatch) -> None:
+    monkeypatch.setenv("DEBUG_INJECT_TOKEN", "supersecret")
+    orch = FakeOrchestrator()
+    app = create_app(conn=None, orchestrator=orch, heartbeat_seconds=999)
+    with TestClient(app) as client:
+        r = client.post(
+            "/debug/inject-post",
+            headers={"Authorization": "Bearer supersecret"},
+            json={"post_id": "x-only"},
+        )
+        assert r.status_code == 400
+
+
+def test_inject_post_rejects_invalid_posted_at(monkeypatch) -> None:
+    monkeypatch.setenv("DEBUG_INJECT_TOKEN", "supersecret")
+    orch = FakeOrchestrator()
+    app = create_app(conn=None, orchestrator=orch, heartbeat_seconds=999)
+    with TestClient(app) as client:
+        r = client.post(
+            "/debug/inject-post",
+            headers={"Authorization": "Bearer supersecret"},
+            json={"post_text": "x", "posted_at": "not-a-date"},
+        )
+        assert r.status_code == 400
+
 
 def test_orchestrator_broadcast_wired_to_ws_manager() -> None:
     """After app startup, orchestrator._broadcast should dispatch to clients."""

@@ -38,6 +38,7 @@ from typing import Any
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 
+from api.routers import debug as debug_router
 from api.routers import performance as performance_router
 from api.routers import positions as positions_router
 from api.routers import signals as signals_router
@@ -142,6 +143,7 @@ def create_app(
     app.include_router(positions_router.router)
     app.include_router(signals_router.router)
     app.include_router(performance_router.router)
+    app.include_router(debug_router.router)
 
     @app.websocket("/ws")
     async def ws_endpoint(websocket: WebSocket) -> None:
