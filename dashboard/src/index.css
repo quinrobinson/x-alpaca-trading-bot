@@ -1,14 +1,152 @@
 @import "tailwindcss";
 
-/* Dashboard theme primitives — Tailwind v4 doesn't ship a config file by
- * default; CSS variables are the preferred extension point. */
+/* =============================================================================
+   Hyper Design System — Light Mode Tokens (ported from tokens.css)
+   Source: claude.ai/design — Hyper Design System
+   ========================================================================== */
+
 :root {
-  --color-bg: oklch(0.12 0 0);
-  --color-card: oklch(0.18 0 0);
-  --color-border: oklch(0.28 0 0);
-  --color-positive: oklch(0.72 0.18 145);
-  --color-negative: oklch(0.66 0.22 30);
+  /* —— Surfaces —— */
+  --bg: #F2F4F7;
+  --bg-warm: #EEEAE6;
+  --surface: #FFFFFF;
+  --surface-2: #F8F9FB;
+  --surface-3: #EEF1F5;
+  --hairline: #E4E7EC;
+  --hairline-strong: #D0D5DD;
+
+  /* —— Ink —— */
+  --ink-900: #0B0F19;
+  --ink-800: #1D2330;
+  --ink-700: #344054;
+  --ink-600: #475467;
+  --ink-500: #667085;
+  --ink-400: #98A2B3;
+  --ink-300: #BCC2CC;
+  --ink-200: #D9DEE5;
+  --ink-100: #ECEFF3;
+
+  /* —— Brand (violet) —— */
+  --brand-50:  #F1EEFE;
+  --brand-100: #E3DCFD;
+  --brand-200: #C7B8FB;
+  --brand-300: #A28BF7;
+  --brand-400: #7E63F2;
+  --brand-500: #5B3DEC;
+  --brand-600: #4A2DD1;
+  --brand-700: #3B22A8;
+  --brand-800: #2C1A7E;
+  --brand-900: #1F1357;
+
+  /* —— Accents (chart families) —— */
+  --orange-300: #FFB07A; --orange-400: #FF8A47; --orange-500: #F26B1F; --orange-600: #D2530E;
+  --green-300:  #7BD896; --green-400:  #3FC367; --green-500:  #1FA74A; --green-600:  #138038;
+  --blue-300:   #7CB7FF; --blue-400:   #4A95FF; --blue-500:   #1E6FE6; --blue-600:   #1456BD;
+  --magenta-300:#F390C5; --magenta-400:#ED5DA8; --magenta-500:#D63A87; --magenta-600:#AC2467;
+  --amber-300:  #FFD66E; --amber-400:  #F5BB2A; --amber-500:  #D69A0A; --amber-600:  #A87705;
+  --teal-300:   #6FD8C9; --teal-400:   #2EBFAC; --teal-500:   #129A88; --teal-600:   #0A7669;
+
+  /* —— Semantic —— */
+  --success: var(--green-500);
+  --warning: var(--amber-500);
+  --danger:  #E5484D;
+  --info:    var(--blue-500);
+
+  /* —— Type —— */
+  --font-sans:    'Geist', 'Inter', system-ui, -apple-system, sans-serif;
+  --font-mono:    'Geist Mono', 'JetBrains Mono', ui-monospace, monospace;
+  --font-display: 'Geist', system-ui, sans-serif;
+
+  /* —— Radii —— */
+  --r-2: 4px; --r-3: 6px; --r-4: 8px; --r-5: 12px;
+  --r-6: 16px;   /* card */
+  --r-7: 20px; --r-8: 24px;
+  --r-pill: 999px;
+
+  /* —— Shadow —— */
+  --shadow-xs: 0 1px 2px rgba(16, 24, 40, 0.06);
+  --shadow-sm: 0 2px 4px rgba(16, 24, 40, 0.06), 0 1px 2px rgba(16, 24, 40, 0.04);
+  --shadow-md: 0 8px 18px -4px rgba(16, 24, 40, 0.10), 0 4px 8px -2px rgba(16, 24, 40, 0.06);
+  --shadow-lg: 0 18px 38px -10px rgba(16, 24, 40, 0.18), 0 8px 16px -6px rgba(16, 24, 40, 0.08);
+  --shadow-card: 0 1px 1px rgba(16, 24, 40, 0.04),
+                 0 8px 24px -10px rgba(16, 24, 40, 0.14),
+                 0 24px 48px -24px rgba(16, 24, 40, 0.10);
 }
 
+/* =============================================================================
+   Tailwind v4 @theme — exposes tokens as utility classes.
+   Use them with `bg-surface`, `text-ink-900`, `border-hairline`, etc.
+   ========================================================================== */
+
+@theme {
+  --color-bg:               #F2F4F7;
+  --color-surface:          #FFFFFF;
+  --color-surface-2:        #F8F9FB;
+  --color-surface-3:        #EEF1F5;
+  --color-hairline:         #E4E7EC;
+  --color-hairline-strong:  #D0D5DD;
+
+  --color-ink-900: #0B0F19;
+  --color-ink-800: #1D2330;
+  --color-ink-700: #344054;
+  --color-ink-600: #475467;
+  --color-ink-500: #667085;
+  --color-ink-400: #98A2B3;
+  --color-ink-300: #BCC2CC;
+  --color-ink-200: #D9DEE5;
+  --color-ink-100: #ECEFF3;
+
+  --color-brand:     #5B3DEC;
+  --color-brand-50:  #F1EEFE;
+  --color-brand-100: #E3DCFD;
+  --color-brand-500: #5B3DEC;
+  --color-brand-600: #4A2DD1;
+
+  --color-positive: #1FA74A;
+  --color-negative: #E5484D;
+  --color-warning:  #D69A0A;
+  --color-info:     #1E6FE6;
+
+  --font-sans:    'Geist', 'Inter', system-ui, -apple-system, sans-serif;
+  --font-mono:    'Geist Mono', 'JetBrains Mono', ui-monospace, monospace;
+
+  --radius-card: 16px;
+  --radius-pill: 999px;
+
+  --shadow-card: 0 1px 1px rgba(16, 24, 40, 0.04),
+                 0 8px 24px -10px rgba(16, 24, 40, 0.14),
+                 0 24px 48px -24px rgba(16, 24, 40, 0.10);
+  --shadow-soft: 0 2px 4px rgba(16, 24, 40, 0.06), 0 1px 2px rgba(16, 24, 40, 0.04);
+}
+
+/* =============================================================================
+   Base
+   ========================================================================== */
+
 html, body, #root { height: 100%; }
-body { font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+
+body {
+  margin: 0;
+  font-family: var(--font-sans);
+  color: var(--ink-900);
+  background: var(--bg);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  font-feature-settings: "ss01", "cv11";
+}
+
+/* Hyper "mono label" utility — used on tiny uppercase eyebrows. */
+.mono-label {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--ink-500);
+}
+
+/* Hyper card — convenience class. */
+.card {
+  background: var(--surface);
+  border-radius: var(--r-6);
+  box-shadow: var(--shadow-card);
+}

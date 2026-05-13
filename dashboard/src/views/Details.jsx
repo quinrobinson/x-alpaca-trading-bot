@@ -127,14 +127,17 @@ export default function Details() {
         killSwitches={killSwitches}
       />
 
-      <main className="flex-1 grid grid-cols-1 lg:grid-cols-12 gap-3 p-3 min-h-0">
+      <main className="flex-1 grid grid-cols-1 lg:grid-cols-12 gap-4 p-4 min-h-0">
         <section className="lg:col-span-3 min-h-0">
           <SignalFeed signals={signals} />
         </section>
 
-        <section className="lg:col-span-6 flex flex-col gap-3 min-h-0">
+        <section className="lg:col-span-6 flex flex-col gap-4 min-h-0">
           {positions.length === 0 && (
-            <div className="bg-slate-900 border border-slate-800 rounded-lg p-6 text-sm text-slate-400">
+            <div
+              className="bg-surface rounded-card p-6 text-sm text-ink-500"
+              style={{ boxShadow: 'var(--shadow-card)' }}
+            >
               No open positions.
             </div>
           )}
@@ -149,20 +152,26 @@ export default function Details() {
         </section>
 
         <section className="lg:col-span-3 min-h-0">
-          <MarketContext
-            snapshot={firstSnapshot}
-            latestSectorString={marketSectorString}
-          />
+          <div
+            className="bg-surface rounded-card p-5 h-full"
+            style={{ boxShadow: 'var(--shadow-card)' }}
+          >
+            <h2 className="mono-label mb-3" style={{ fontSize: 11 }}>Market context</h2>
+            <MarketContext
+              snapshot={firstSnapshot}
+              latestSectorString={marketSectorString}
+            />
+          </div>
         </section>
       </main>
 
-      <div className="p-3">
+      <div className="px-4 pb-4">
         <PerformanceHistory performance={performance} />
       </div>
 
-      <footer className="px-4 py-3 text-xs text-slate-500 flex items-center justify-between border-t border-slate-800/60">
-        <span>advanced view</span>
-        <Link to="/" className="hover:text-slate-300">← back to dashboard</Link>
+      <footer className="px-4 py-4 text-xs text-ink-500 flex items-center justify-between border-t border-hairline">
+        <span className="font-mono uppercase tracking-wider" style={{ fontSize: 10 }}>advanced view</span>
+        <Link to="/" className="hover:text-ink-900 transition-colors">← back to dashboard</Link>
       </footer>
     </div>
   )

@@ -1,14 +1,8 @@
-import { useState } from 'react'
 import { fmtMoney, fmtPct, fmtRelative, pnlColorClass } from '../../util'
 
 /**
- * Timeline — the main view. Each card pairs a tweet with its outcome.
- *
- * Cards adapt to the `kind`:
- *   trade_closed       — green/red P&L, exit reason, hold duration
- *   position_open      — "in trade" badge, posted price → live ask
- *   signal_rejected    — gray, shows rejection reason inline
- *   signal_unactionable — minimal, just the tweet + "not a signal"
+ * Timeline — Hyper light cards, each pairing a tweet with its outcome.
+ * A 3px colored bar on the left indicates the entry kind.
  */
 export default function Timeline({ items = [], showRejected, onToggleRejected }) {
   const visible = showRejected
@@ -17,23 +11,24 @@ export default function Timeline({ items = [], showRejected, onToggleRejected })
 
   return (
     <section className="space-y-3">
-      <header className="flex items-center justify-between">
-        <h2 className="text-sm font-semibold uppercase tracking-wide text-slate-300">
-          Timeline
-        </h2>
-        <label className="flex items-center gap-2 text-xs text-slate-400 cursor-pointer">
+      <header className="flex items-center justify-between px-1">
+        <h2 className="mono-label" style={{ fontSize: 11 }}>Timeline</h2>
+        <label className="flex items-center gap-2 text-xs text-ink-600 cursor-pointer select-none">
           <input
             type="checkbox"
             checked={showRejected}
             onChange={(e) => onToggleRejected(e.target.checked)}
-            className="accent-slate-400"
+            className="accent-brand w-3.5 h-3.5"
           />
-          Show skipped
+          <span>Show skipped</span>
         </label>
       </header>
 
       {visible.length === 0 && (
-        <div className="bg-slate-900 border border-slate-800 rounded-lg p-6 text-sm text-slate-500 text-center">
+        <div
+          className="bg-surface rounded-card px-6 py-8 text-center text-sm text-ink-500"
+          style={{ boxShadow: 'var(--shadow-card)' }}
+        >
           {items.length === 0
             ? 'No signals yet.'
             : `${items.length} skipped — toggle "Show skipped" to view.`}
@@ -59,88 +54,124 @@ function TimelineCard({ item }) {
 }
 
 
+function CardShell({ accent, children, dim = false }) {
+  return (
+    <article
+      className="bg-surface rounded-card p-4 relative overflow-hidden"
+      style={{
+        boxShadow: 'var(--shadow-card)',
+        opacity: dim ? 0.85 : 1,
+      }}
+    >
+      <span
+        aria-hidden="true"
+        className="absolute left-0 top-0 bottom-0 w-1"
+        style={{ background: accent }}
+      />
+      <div className="pl-2">{children}</div>
+    </article>
+  )
+}
+
+
 function TradeCard({ item }) {
   const pnlPct = Number(item.trade.pnl_pct)
   const pnl = Number(item.trade.gross_pnl)
   const isWin = pnl > 0
   return (
-    <article className={`bg-slate-900 border-l-2 ${isWin ? 'border-l-emerald-500' : 'border-l-rose-500'} border border-slate-800 rounded-lg p-3`}>
+    <CardShell accent={isWin ? 'var(--green-500)' : 'var(--danger)'}>
       <div className="flex items-baseline justify-between gap-3">
-        <div className="text-[10px] uppercase font-medium text-slate-400">
-          {isWin ? '✓ closed (win)' : '✗ closed (loss)'} · {item.trade.exit_reason}
+        <div className="mono-label" style={{ fontSize: 10 }}>
+          {isWin ? '✓ closed · win' : '✗ closed · loss'} · {item.trade.exit_reason}
         </div>
-        <div className="text-[10px] text-slate-500">{fmtRelative(item.trade.closed_at)}</div>
+        <div className="text-ink-500" style={{ fontSize: 11 }}>
+          {fmtRelative(item.trade.closed_at)}
+        </div>
       </div>
       <div className="mt-1 flex items-baseline gap-3">
-        <span className={`text-base font-bold ${pnlColorClass(pnlPct)}`}>{fmtPct(pnlPct)}</span>
-        <span className={`text-xs ${pnlColorClass(pnl)}`}>{fmtMoney(pnl)}</span>
-        <span className="text-xs text-slate-400 ml-auto">{item.trade.hold_minutes}m hold</span>
+        <span className={`text-lg font-bold tracking-tight ${pnlColorClass(pnlPct)}`}>
+          {fmtPct(pnlPct)}
+        </span>
+        <span className={`text-sm font-mono ${pnlColorClass(pnl)}`}>{fmtMoney(pnl)}</span>
+        <span className="text-xs text-ink-500 ml-auto font-mono">{item.trade.hold_minutes}m hold</span>
       </div>
-      <p className="mt-2 text-sm italic text-slate-200 truncate">"{item.post_text}"</p>
-      <div className="mt-1 flex items-center gap-3 text-[11px] text-slate-400 font-mono">
-        <span>{item.signal.ticker} ${item.signal.strike} {item.signal.option_type?.[0]?.toUpperCase()}</span>
+      <p className="mt-2 text-sm text-ink-700 leading-snug">"{item.post_text}"</p>
+      <div className="mt-2 flex items-center gap-3 text-xs text-ink-500 font-mono">
+        <span className="text-ink-700">
+          {item.signal.ticker} ${item.signal.strike} {item.signal.option_type?.[0]?.toUpperCase()}
+        </span>
         <span>{item.signal.expiration}</span>
         <span className="ml-auto">
           entry {item.trade.entry_price} → exit {item.trade.exit_price}
         </span>
       </div>
-    </article>
+    </CardShell>
   )
 }
 
 
 function PositionOpenCard({ item }) {
   return (
-    <article className="bg-slate-900 border-l-2 border-l-amber-400 border border-slate-800 rounded-lg p-3">
+    <CardShell accent="var(--amber-500)">
       <div className="flex items-baseline justify-between gap-3">
-        <div className="text-[10px] uppercase font-medium text-amber-300">
-          ◐ in trade
+        <div className="mono-label text-warning" style={{ fontSize: 10 }}>◐ in trade</div>
+        <div className="text-ink-500" style={{ fontSize: 11 }}>
+          {fmtRelative(item.signal.parsed_at)}
         </div>
-        <div className="text-[10px] text-slate-500">{fmtRelative(item.signal.parsed_at)}</div>
       </div>
-      <p className="mt-2 text-sm italic text-slate-200 truncate">"{item.post_text}"</p>
-      <div className="mt-1 flex items-center gap-3 text-[11px] text-slate-400 font-mono">
-        <span>{item.signal.ticker} ${item.signal.strike} {item.signal.option_type?.[0]?.toUpperCase()}</span>
+      <p className="mt-2 text-sm text-ink-700 leading-snug">"{item.post_text}"</p>
+      <div className="mt-2 flex items-center gap-3 text-xs text-ink-500 font-mono">
+        <span className="text-ink-700">
+          {item.signal.ticker} ${item.signal.strike} {item.signal.option_type?.[0]?.toUpperCase()}
+        </span>
         <span>{item.signal.expiration}</span>
         <span className="ml-auto">
           posted {item.signal.posted_price} → live {item.signal.live_ask ?? '—'}
         </span>
       </div>
-    </article>
+    </CardShell>
   )
 }
 
 
 function RejectedCard({ item }) {
   return (
-    <article className="bg-slate-900/60 border-l-2 border-l-slate-700 border border-slate-800 rounded-lg p-3">
+    <CardShell accent="var(--ink-300)" dim>
       <div className="flex items-baseline justify-between gap-3">
-        <div className="text-[10px] uppercase font-medium text-slate-500">
+        <div className="mono-label" style={{ fontSize: 10 }}>
           ✗ skipped · {item.signal.rejection_reason}
         </div>
-        <div className="text-[10px] text-slate-500">{fmtRelative(item.signal.parsed_at)}</div>
+        <div className="text-ink-500" style={{ fontSize: 11 }}>
+          {fmtRelative(item.signal.parsed_at)}
+        </div>
       </div>
-      <p className="mt-2 text-sm italic text-slate-400 truncate">"{item.post_text}"</p>
-      <div className="mt-1 flex items-center gap-3 text-[11px] text-slate-500 font-mono">
-        <span>{item.signal.ticker} ${item.signal.strike} {item.signal.option_type?.[0]?.toUpperCase()}</span>
+      <p className="mt-2 text-sm text-ink-600 leading-snug">"{item.post_text}"</p>
+      <div className="mt-2 flex items-center gap-3 text-xs text-ink-500 font-mono">
+        <span>
+          {item.signal.ticker} ${item.signal.strike} {item.signal.option_type?.[0]?.toUpperCase()}
+        </span>
         <span>{item.signal.expiration}</span>
         {item.signal.live_ask && (
-          <span className="ml-auto">posted {item.signal.posted_price} vs live {item.signal.live_ask}</span>
+          <span className="ml-auto">
+            posted {item.signal.posted_price} vs live {item.signal.live_ask}
+          </span>
         )}
       </div>
-    </article>
+    </CardShell>
   )
 }
 
 
 function UnactionableCard({ item }) {
   return (
-    <article className="bg-slate-900/40 border border-slate-800/60 rounded-lg px-3 py-2">
+    <article
+      className="rounded-card px-4 py-3 bg-surface-2 border border-hairline"
+    >
       <div className="flex items-baseline justify-between gap-3">
-        <div className="text-[10px] uppercase text-slate-600">not a signal</div>
-        <div className="text-[10px] text-slate-600">{fmtRelative(item.posted_at)}</div>
+        <div className="mono-label text-ink-400" style={{ fontSize: 10 }}>not a signal</div>
+        <div className="text-ink-400" style={{ fontSize: 11 }}>{fmtRelative(item.posted_at)}</div>
       </div>
-      <p className="text-xs italic text-slate-500 truncate mt-1">"{item.post_text}"</p>
+      <p className="text-xs text-ink-500 mt-1 leading-snug">"{item.post_text}"</p>
     </article>
   )
 }

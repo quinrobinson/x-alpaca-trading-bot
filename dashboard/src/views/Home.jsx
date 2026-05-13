@@ -118,11 +118,14 @@ export default function Home() {
         killSwitches={killSwitches}
       />
 
-      <main className="flex-1 px-4 py-4 lg:grid lg:grid-cols-3 lg:gap-4 space-y-3 lg:space-y-0">
+      <main className="flex-1 px-4 py-5 lg:px-6 lg:py-6 lg:grid lg:grid-cols-3 lg:gap-5 space-y-4 lg:space-y-0">
         {/* Left column (mobile: stacked first) — open position + stats */}
-        <aside className="lg:col-span-1 space-y-3">
+        <aside className="lg:col-span-1 space-y-4">
           {positions.length === 0 ? (
-            <section className="bg-slate-900 border border-slate-800 rounded-lg p-5 text-center text-sm text-slate-500">
+            <section
+              className="bg-surface rounded-card p-6 text-center text-sm text-ink-500"
+              style={{ boxShadow: 'var(--shadow-card)' }}
+            >
               No open positions.
             </section>
           ) : (
@@ -156,9 +159,11 @@ export default function Home() {
         </section>
       </main>
 
-      <footer className="px-4 py-3 text-xs text-slate-500 flex items-center justify-between border-t border-slate-800/60">
-        <span>x-alpaca-trading-bot</span>
-        <Link to="/details" className="hover:text-slate-300">advanced view →</Link>
+      <footer className="px-4 lg:px-6 py-4 text-xs text-ink-500 flex items-center justify-between border-t border-hairline mt-4">
+        <span className="font-mono uppercase tracking-wider" style={{ fontSize: 10 }}>
+          x-alpaca-trading-bot
+        </span>
+        <Link to="/details" className="hover:text-ink-900 transition-colors">advanced view →</Link>
       </footer>
     </div>
   )

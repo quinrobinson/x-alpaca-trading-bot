@@ -1,21 +1,28 @@
 import { useState } from 'react'
 
-/** Single-line collapsible "drawer" used for Market context, etc. */
+/** Hyper-styled collapsible drawer. */
 export default function CollapsibleSection({ title, children, defaultOpen = false }) {
   const [open, setOpen] = useState(defaultOpen)
   return (
-    <section className="bg-slate-900 border border-slate-800 rounded-lg">
+    <section
+      className="bg-surface rounded-card"
+      style={{ boxShadow: 'var(--shadow-card)' }}
+    >
       <button
         onClick={() => setOpen((o) => !o)}
-        className="w-full flex items-center justify-between px-4 py-3 text-left"
+        className="w-full flex items-center justify-between px-5 py-4 text-left"
       >
-        <span className="text-xs uppercase text-slate-400">{title}</span>
-        <svg className={`w-3 h-3 text-slate-400 transition-transform ${open ? 'rotate-180' : ''}`}
-             viewBox="0 0 12 12">
+        <span className="mono-label" style={{ fontSize: 11 }}>{title}</span>
+        <svg
+          className={`w-3 h-3 text-ink-500 transition-transform ${open ? 'rotate-180' : ''}`}
+          viewBox="0 0 12 12"
+        >
           <path d="M3 4.5l3 3 3-3" stroke="currentColor" strokeWidth="1.5" fill="none" />
         </svg>
       </button>
-      {open && <div className="px-4 pb-4 border-t border-slate-800 pt-3">{children}</div>}
+      {open && (
+        <div className="px-5 pb-5 border-t border-hairline pt-4">{children}</div>
+      )}
     </section>
   )
 }

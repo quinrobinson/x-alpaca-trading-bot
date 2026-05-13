@@ -36,10 +36,10 @@ export function fmtRelative(iso, now = Date.now()) {
   return `${Math.floor(diff / 3600)}h ago`
 }
 
-// Color a P&L number red/green. Returns a Tailwind utility class.
+// Color a P&L number red/green. Maps to Hyper semantic tokens.
 export function pnlColorClass(value) {
-  if (value === null || value === undefined || value === '') return 'text-slate-400'
+  if (value === null || value === undefined || value === '') return 'text-ink-500'
   const n = typeof value === 'number' ? value : Number(value)
-  if (!Number.isFinite(n) || n === 0) return 'text-slate-400'
-  return n > 0 ? 'text-emerald-400' : 'text-rose-400'
+  if (!Number.isFinite(n) || n === 0) return 'text-ink-500'
+  return n > 0 ? 'text-positive' : 'text-negative'
 }

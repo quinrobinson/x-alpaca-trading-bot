@@ -6,9 +6,7 @@ import { fmtMoney, fmtPct, pnlColorClass } from '../../util'
  *
  *   ● running        +$0.50  ▾
  *
- * Tapping the chevron reveals the system-status drawer (X stream, Alpaca,
- * WS, daily-loss progress). Everything that USED to live across the top
- * bar is one tap away but not in your face.
+ * Tapping the chevron reveals the system-status drawer.
  */
 export default function Header({
   wsStatus,
@@ -20,7 +18,6 @@ export default function Header({
 }) {
   const [open, setOpen] = useState(false)
 
-  // Operator-paused via DISABLE_X_STREAM doesn't count as "kill switch"
   const xDisabled = health?.x_stream_disabled === true
   const fatalSwitches = killSwitches.filter(
     (s) => !(xDisabled && s === 'x_stream_disconnected'),
@@ -28,13 +25,13 @@ export default function Header({
 
   let dotClass, statusText
   if (fatalSwitches.length > 0) {
-    dotClass = 'bg-rose-400'
+    dotClass = 'bg-negative'
     statusText = 'paused'
   } else if (wsStatus !== 'open') {
-    dotClass = 'bg-amber-400'
+    dotClass = 'bg-warning'
     statusText = 'connecting'
   } else {
-    dotClass = 'bg-emerald-400'
+    dotClass = 'bg-positive'
     statusText = 'running'
   }
 
@@ -42,10 +39,21 @@ export default function Header({
   const pnlNum = totalPnl != null ? Number(totalPnl) : null
 
   return (
-    <header className="sticky top-0 z-10 bg-slate-950/95 backdrop-blur border-b border-slate-800">
+    <header className="sticky top-0 z-10 bg-surface/95 backdrop-blur border-b border-hairline">
       <div className="px-4 py-3 flex items-center gap-3">
-        <span className={`inline-block w-2.5 h-2.5 rounded-full ${dotClass}`} />
-        <span className="text-sm font-medium">{statusText}</span>
+        <span
+          className={`inline-block w-2.5 h-2.5 rounded-full ${dotClass}`}
+          style={{
+            boxShadow: `0 0 0 3px ${
+              fatalSwitches.length > 0
+                ? 'rgba(229,72,77,0.18)'
+                : wsStatus !== 'open'
+                ? 'rgba(214,154,10,0.18)'
+                : 'rgba(31,167,74,0.18)'
+            }`,
+          }}
+        />
+        <span className="text-sm font-semibold text-ink-900 tracking-tight">{statusText}</span>
 
         <div className="ml-auto flex items-center gap-3">
           {pnlNum !== null && (
@@ -55,14 +63,14 @@ export default function Header({
           )}
           <button
             onClick={() => setOpen((o) => !o)}
-            className="text-slate-400 hover:text-slate-100 text-xs flex items-center gap-1"
+            className="text-ink-500 hover:text-ink-900 text-xs flex items-center gap-1 transition-colors"
             aria-expanded={open}
             aria-label="Toggle system status details"
           >
-            details
+            <span className="font-mono uppercase tracking-wider text-[10px]">details</span>
             <svg
               className={`w-3 h-3 transition-transform ${open ? 'rotate-180' : ''}`}
-              viewBox="0 0 12 12" fill="currentColor"
+              viewBox="0 0 12 12"
             >
               <path d="M3 4.5l3 3 3-3" stroke="currentColor" strokeWidth="1.5" fill="none" />
             </svg>
@@ -90,10 +98,10 @@ function SystemStatus({
   xDisabled, startingEquity, dailyLossKillPct,
 }) {
   const xLabel = xDisabled
-    ? { text: 'disabled', tone: 'text-amber-400' }
+    ? { text: 'disabled', tone: 'text-warning' }
     : killSwitches.includes('x_stream_disconnected')
-    ? { text: 'down', tone: 'text-rose-400' }
-    : { text: 'connected', tone: 'text-emerald-400' }
+    ? { text: 'down', tone: 'text-negative' }
+    : { text: 'connected', tone: 'text-positive' }
 
   const alpacaDown = killSwitches.includes('alpaca_disconnected')
   const realizedPnl = Number(performance?.stats?.total_pnl ?? 0)
@@ -103,22 +111,30 @@ function SystemStatus({
     : 0
 
   return (
-    <div className="px-4 pb-3 border-t border-slate-800/60 grid grid-cols-2 sm:grid-cols-4 gap-3 text-xs pt-3">
+    <div className="px-4 pb-4 border-t border-hairline grid grid-cols-2 sm:grid-cols-4 gap-3 pt-3">
       <Stat label="X stream" value={xLabel.text} tone={xLabel.tone} />
-      <Stat label="Alpaca" value={alpacaDown ? 'down' : 'connected'}
-            tone={alpacaDown ? 'text-rose-400' : 'text-emerald-400'} />
+      <Stat
+        label="Alpaca"
+        value={alpacaDown ? 'down' : 'connected'}
+        tone={alpacaDown ? 'text-negative' : 'text-positive'}
+      />
       <Stat label="Market" value={health?.market_open ? 'open' : 'closed'} />
-      <Stat label="WebSocket" value={wsStatus}
-            tone={wsStatus === 'open' ? 'text-emerald-400' : 'text-amber-400'} />
+      <Stat
+        label="WebSocket"
+        value={wsStatus}
+        tone={wsStatus === 'open' ? 'text-positive' : 'text-warning'}
+      />
 
       <div className="col-span-2 sm:col-span-4 mt-1">
-        <div className="flex justify-between text-[10px] uppercase text-slate-500 mb-1">
+        <div className="flex justify-between mono-label mb-1.5" style={{ fontSize: 10 }}>
           <span>Daily loss</span>
-          <span>limit {fmtMoney(-dailyLossLimit)} ({fmtPct(-dailyLossKillPct)})</span>
+          <span className="normal-case tracking-normal text-ink-500">
+            limit {fmtMoney(-dailyLossLimit)} ({fmtPct(-dailyLossKillPct)})
+          </span>
         </div>
-        <div className="h-1.5 rounded bg-slate-800 overflow-hidden">
+        <div className="h-1.5 rounded-full bg-ink-100 overflow-hidden">
           <div
-            className={`h-full ${progressPct >= 80 ? 'bg-rose-500' : 'bg-amber-400'} transition-all`}
+            className={`h-full transition-all ${progressPct >= 80 ? 'bg-negative' : 'bg-warning'}`}
             style={{ width: `${progressPct}%` }}
           />
         </div>
@@ -127,11 +143,11 @@ function SystemStatus({
   )
 }
 
-function Stat({ label, value, tone = 'text-slate-100' }) {
+function Stat({ label, value, tone = 'text-ink-900' }) {
   return (
     <div>
-      <div className="text-[10px] uppercase text-slate-500">{label}</div>
-      <div className={`text-sm font-medium ${tone}`}>{value}</div>
+      <div className="mono-label" style={{ fontSize: 10 }}>{label}</div>
+      <div className={`text-sm font-medium mt-0.5 ${tone}`}>{value}</div>
     </div>
   )
 }

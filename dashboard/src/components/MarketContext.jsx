@@ -1,24 +1,16 @@
 import { fmtPct } from '../util'
 
 /**
- * Panel 4 — Market Context (right column).
- *
- * VIX, SPY/QQQ trend vs EMA21, sector ETF heatmap. Sourced from the most
- * recent indicator_snapshots row plus aggregated sector data.
- *
- * The bot's data_service summarizes the sector top movers into a single
- * comma-packed string (e.g. "XLK+1.23%,XLE-0.45%"). We just render it.
+ * Market context — Hyper light tokens. Used in both Home (collapsible)
+ * and Details views.
  */
 export default function MarketContext({ snapshot, latestSectorString }) {
   const vix = snapshot?.vix
   const spy = snapshot?.spy_vs_ema21
-  // Parse the packed sector string into chips
   const sectors = parseSectorString(latestSectorString || snapshot?.sector_etf_trend)
 
   return (
-    <div className="bg-slate-900 border border-slate-800 rounded-lg p-4 h-full">
-      <h2 className="text-sm font-semibold uppercase tracking-wide mb-3">Market context</h2>
-
+    <div>
       <div className="grid grid-cols-2 gap-3">
         <BigStat label="VIX" value={vix ?? '—'} />
         <BigStat
@@ -29,18 +21,18 @@ export default function MarketContext({ snapshot, latestSectorString }) {
       </div>
 
       <div className="mt-4">
-        <div className="text-[10px] uppercase text-slate-500 mb-2">Sector heatmap</div>
+        <div className="mono-label mb-2" style={{ fontSize: 10 }}>Sector heatmap</div>
         {sectors.length === 0 && (
-          <div className="text-xs text-slate-500">no recent data</div>
+          <div className="text-xs text-ink-500">no recent data</div>
         )}
-        <div className="grid grid-cols-3 gap-1">
+        <div className="grid grid-cols-3 gap-1.5">
           {sectors.map(({ symbol, pct }) => (
             <div
               key={symbol}
-              className={`px-2 py-1 rounded text-xs font-mono ${
+              className={`px-2 py-1.5 rounded-lg text-xs font-mono ${
                 pct >= 0
-                  ? 'bg-emerald-500/15 text-emerald-300'
-                  : 'bg-rose-500/15 text-rose-300'
+                  ? 'bg-[var(--green-500)]/10 text-positive'
+                  : 'bg-[var(--danger)]/10 text-negative'
               }`}
             >
               <span className="font-semibold">{symbol}</span>{' '}
@@ -55,23 +47,17 @@ export default function MarketContext({ snapshot, latestSectorString }) {
 
 function BigStat({ label, value, accent }) {
   const tone =
-    accent === 'positive' ? 'text-emerald-400'
-    : accent === 'negative' ? 'text-rose-400'
-    : 'text-slate-100'
+    accent === 'positive' ? 'text-positive'
+    : accent === 'negative' ? 'text-negative'
+    : 'text-ink-900'
   return (
-    <div className="bg-slate-950/40 rounded p-2">
-      <div className="text-[10px] uppercase text-slate-500">{label}</div>
-      <div className={`text-base font-mono mt-0.5 ${tone}`}>{value}</div>
+    <div className="bg-surface-2 rounded-xl px-3 py-2.5 border border-hairline">
+      <div className="mono-label" style={{ fontSize: 10 }}>{label}</div>
+      <div className={`text-base font-mono font-medium mt-0.5 ${tone}`}>{value}</div>
     </div>
   )
 }
 
-/**
- * Accepts either:
- *  - a string from snapshot (e.g. "XLK+1.23%,XLE-0.45%")
- *  - a fallback null/undefined
- * Returns [{symbol, pct}]
- */
 function parseSectorString(s) {
   if (!s || typeof s !== 'string') return []
   return s
