@@ -2,9 +2,9 @@ import { useState } from 'react'
 import { fmtMoney, fmtPct, fmtRelative, pnlColorClass } from '../../util'
 
 /**
- * Open position card — Hyper "Sales Report" style:
- *   white surface, 16px radius, soft multi-layer shadow,
- *   16px title, mono numbers, hairline-separated metric grid.
+ * Open position card — APDF dark.
+ *   #1A1A1A card, 1px border, 12px radius, mono numbers,
+ *   warm-amber outline highlight to mark "in trade".
  */
 export default function OpenPositionCard({ position, livePrice, snapshot }) {
   const [expanded, setExpanded] = useState(false)
@@ -24,16 +24,20 @@ export default function OpenPositionCard({ position, livePrice, snapshot }) {
 
   return (
     <article
-      className="bg-surface rounded-card p-5"
-      style={{ boxShadow: 'var(--shadow-card)' }}
+      className="rounded-card p-5"
+      style={{
+        background: 'var(--card)',
+        border: '1px solid rgba(245,158,11,0.30)',
+        boxShadow: '0 0 0 1px rgba(245,158,11,0.06)',
+      }}
     >
       <header className="flex items-baseline justify-between gap-3">
         <div className="min-w-0">
-          <h3 className="text-base font-bold text-ink-900 tracking-tight truncate">
+          <h3 className="text-base font-display font-semibold text-fg tracking-tight truncate">
             {position.ticker} ${position.strike} {position.option_type?.[0]?.toUpperCase()}
-            <span className="ml-2 text-xs text-ink-500 font-normal">{position.expiration}</span>
+            <span className="ml-2 text-xs text-fg-dim font-normal">{position.expiration}</span>
           </h3>
-          <div className="font-mono text-ink-400 mt-0.5 truncate" style={{ fontSize: 10 }}>
+          <div className="font-mono text-fg-faint mt-0.5 truncate" style={{ fontSize: 10 }}>
             {position.contract_symbol}
           </div>
         </div>
@@ -50,10 +54,10 @@ export default function OpenPositionCard({ position, livePrice, snapshot }) {
           <span>ENTRY {fmtMoney(entry)}</span>
           <span>TARGET {fmtMoney(target)}</span>
         </div>
-        <div className="relative h-2 bg-ink-100 rounded-full">
+        <div className="relative h-2 rounded-full" style={{ background: 'var(--elevated)' }}>
           <div
-            className="absolute top-0 h-full w-px bg-ink-300"
-            style={{ left: `${entryPct}%` }}
+            className="absolute top-0 h-full w-px"
+            style={{ left: `${entryPct}%`, background: 'var(--border-hover)' }}
           />
           <div
             className={`absolute -top-1 w-2.5 h-4 rounded ${pnl >= 0 ? 'bg-positive' : 'bg-negative'}`}
@@ -64,12 +68,18 @@ export default function OpenPositionCard({ position, livePrice, snapshot }) {
 
       {/* The originating tweet */}
       {position.source_post && (
-        <div className="mt-4 p-3 rounded-xl bg-surface-2 border border-hairline">
+        <div
+          className="mt-4 p-3 rounded-lg"
+          style={{
+            background: 'var(--surface)',
+            border: '1px solid var(--border)',
+          }}
+        >
           <div className="mono-label mb-1" style={{ fontSize: 10 }}>Triggered by</div>
-          <p className="text-sm text-ink-700 leading-snug">
+          <p className="text-sm text-fg-muted leading-snug">
             "{position.source_post.post_text}"
           </p>
-          <div className="text-ink-500 mt-1.5" style={{ fontSize: 11 }}>
+          <div className="text-fg-dim mt-1.5" style={{ fontSize: 11 }}>
             {fmtRelative(position.source_post.posted_at)}
           </div>
         </div>
@@ -77,9 +87,12 @@ export default function OpenPositionCard({ position, livePrice, snapshot }) {
 
       <button
         onClick={() => setExpanded((e) => !e)}
-        className="mt-4 w-full text-xs text-ink-500 hover:text-ink-900 flex items-center justify-center gap-1.5 transition-colors py-1"
+        className="mt-4 w-full text-xs text-fg-dim hover:text-fg flex items-center justify-center gap-1.5 transition-colors py-1"
       >
-        <span className="font-mono uppercase tracking-wider" style={{ fontSize: 10 }}>
+        <span
+          className="font-mono uppercase tracking-wider"
+          style={{ fontSize: 10, letterSpacing: '0.16em' }}
+        >
           {expanded ? 'Hide' : 'Show'} Greeks &amp; indicators
         </span>
         <svg
@@ -91,7 +104,7 @@ export default function OpenPositionCard({ position, livePrice, snapshot }) {
       </button>
 
       {expanded && (
-        <div className="mt-3 pt-4 border-t border-hairline space-y-4">
+        <div className="mt-3 pt-4 border-t border-border space-y-4">
           <div className="grid grid-cols-4 gap-3">
             <Stat label="Delta" value={snapshot?.delta} />
             <Stat label="Gamma" value={snapshot?.gamma} />
@@ -104,9 +117,9 @@ export default function OpenPositionCard({ position, livePrice, snapshot }) {
             <Stat label="ATR 14" value={snapshot?.atr_14} />
             <Stat label="IV" value={snapshot?.iv} />
           </div>
-          <div className="flex items-center justify-between text-xs text-ink-600 pt-3 border-t border-hairline">
-            <span>Ratchet: <span className="text-ink-900 font-medium">{ratchetLabel}</span></span>
-            <span>Qty: <span className="text-ink-900 font-medium">{position.qty}</span></span>
+          <div className="flex items-center justify-between text-xs text-fg-muted pt-3 border-t border-border">
+            <span>Ratchet: <span className="text-fg font-medium">{ratchetLabel}</span></span>
+            <span>Qty: <span className="text-fg font-medium">{position.qty}</span></span>
             <span>Opened {fmtRelative(position.opened_at)}</span>
           </div>
         </div>
@@ -121,7 +134,7 @@ function Stat({ label, value, negative }) {
   return (
     <div>
       <div className="mono-label" style={{ fontSize: 10 }}>{label}</div>
-      <div className={`text-sm font-mono mt-0.5 ${isNeg ? 'text-negative' : 'text-ink-900'}`}>
+      <div className={`text-sm font-mono mt-0.5 ${isNeg ? 'text-negative' : 'text-fg'}`}>
         {value === null || value === undefined ? '—' : value}
       </div>
     </div>

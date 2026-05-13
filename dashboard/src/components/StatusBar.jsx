@@ -1,7 +1,7 @@
 import { fmtMoney, fmtPct, fmtRelative, pnlColorClass } from '../util'
 
 /**
- * Legacy detailed status bar (used in /details view). Hyper light tokens.
+ * Legacy detailed status bar (used in /details view). APDF dark tokens.
  */
 export default function StatusBar({
   wsStatus,
@@ -33,7 +33,7 @@ export default function StatusBar({
     : { text: 'connected', tone: 'text-positive' }
 
   return (
-    <div className="bg-surface border-b border-hairline px-4 py-4">
+    <div className="bg-surface border-b border-border px-4 py-4">
       <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-7 gap-4 items-center">
         <Cell label="Bot" value={botStatus} tone={botColor} />
         <Cell label="Market" value={health?.market_open ? 'open' : 'closed'} />
@@ -58,13 +58,13 @@ export default function StatusBar({
 
       <div className="mt-4 flex items-center gap-3">
         <div className="mono-label w-24" style={{ fontSize: 10 }}>Daily loss</div>
-        <div className="flex-1 h-2 rounded-full bg-ink-100 overflow-hidden">
+        <div className="flex-1 h-2 rounded-full bg-elevated overflow-hidden">
           <div
             className={`h-full transition-all ${progressPct >= 80 ? 'bg-negative' : 'bg-warning'}`}
             style={{ width: `${progressPct}%` }}
           />
         </div>
-        <div className="text-xs text-ink-500 w-44 text-right font-mono">
+        <div className="text-xs text-fg-dim w-44 text-right font-mono">
           limit: {fmtMoney(-dailyLossLimit)} ({fmtPct(-dailyLossKillPct)})
         </div>
       </div>
@@ -72,7 +72,7 @@ export default function StatusBar({
   )
 }
 
-function Cell({ label, value, tone = 'text-ink-900' }) {
+function Cell({ label, value, tone = 'text-fg' }) {
   return (
     <div>
       <div className="mono-label" style={{ fontSize: 10 }}>{label}</div>

@@ -134,10 +134,7 @@ export default function Details() {
 
         <section className="lg:col-span-6 flex flex-col gap-4 min-h-0">
           {positions.length === 0 && (
-            <div
-              className="bg-surface rounded-card p-6 text-sm text-ink-500"
-              style={{ boxShadow: 'var(--shadow-card)' }}
-            >
+            <div className="card p-6 text-sm text-fg-dim">
               No open positions.
             </div>
           )}
@@ -152,10 +149,7 @@ export default function Details() {
         </section>
 
         <section className="lg:col-span-3 min-h-0">
-          <div
-            className="bg-surface rounded-card p-5 h-full"
-            style={{ boxShadow: 'var(--shadow-card)' }}
-          >
+          <div className="card p-5 h-full">
             <h2 className="mono-label mb-3" style={{ fontSize: 11 }}>Market context</h2>
             <MarketContext
               snapshot={firstSnapshot}
@@ -169,9 +163,14 @@ export default function Details() {
         <PerformanceHistory performance={performance} />
       </div>
 
-      <footer className="px-4 py-4 text-xs text-ink-500 flex items-center justify-between border-t border-hairline">
-        <span className="font-mono uppercase tracking-wider" style={{ fontSize: 10 }}>advanced view</span>
-        <Link to="/" className="hover:text-ink-900 transition-colors">← back to dashboard</Link>
+      <footer className="px-4 py-4 text-xs text-fg-dim flex items-center justify-between border-t border-border">
+        <span
+          className="font-mono uppercase tracking-wider"
+          style={{ fontSize: 10, letterSpacing: '0.16em' }}
+        >
+          advanced view
+        </span>
+        <Link to="/" className="hover:text-fg transition-colors">← back to dashboard</Link>
       </footer>
     </div>
   )

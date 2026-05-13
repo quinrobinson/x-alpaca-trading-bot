@@ -1,12 +1,15 @@
 import { useState } from 'react'
 import { fmtMoney, fmtPct, pnlColorClass } from '../../util'
+import BrandMark from './BrandMark.jsx'
 
 /**
- * Sticky header. One row, one answerable question: is the bot running?
+ * Sticky header — APDF dark.
  *
- *   ● running        +$0.50  ▾
+ *   [X]  x-alpaca-trading-bot                ● running   +$0.50   ▾
  *
- * Tapping the chevron reveals the system-status drawer.
+ * Brand mark + wordmark on the left, status dot + P&L + details
+ * toggle on the right. Sits flush against the page background — no
+ * white strip — separated from content by a thin border.
  */
 export default function Header({
   wsStatus,
@@ -23,51 +26,81 @@ export default function Header({
     (s) => !(xDisabled && s === 'x_stream_disconnected'),
   )
 
-  let dotClass, statusText
+  let dotColor, statusText, glow
   if (fatalSwitches.length > 0) {
-    dotClass = 'bg-negative'
-    statusText = 'paused'
+    dotColor = 'var(--negative)'; statusText = 'paused'
+    glow = 'rgba(239,68,68,0.20)'
   } else if (wsStatus !== 'open') {
-    dotClass = 'bg-warning'
-    statusText = 'connecting'
+    dotColor = 'var(--warning)'; statusText = 'connecting'
+    glow = 'rgba(245,158,11,0.20)'
   } else {
-    dotClass = 'bg-positive'
-    statusText = 'running'
+    dotColor = 'var(--positive)'; statusText = 'running'
+    glow = 'rgba(34,197,94,0.20)'
   }
 
   const totalPnl = performance?.stats?.total_pnl
   const pnlNum = totalPnl != null ? Number(totalPnl) : null
 
   return (
-    <header className="sticky top-0 z-10 bg-surface/95 backdrop-blur border-b border-hairline">
-      <div className="px-4 py-3 flex items-center gap-3">
-        <span
-          className={`inline-block w-2.5 h-2.5 rounded-full ${dotClass}`}
-          style={{
-            boxShadow: `0 0 0 3px ${
-              fatalSwitches.length > 0
-                ? 'rgba(229,72,77,0.18)'
-                : wsStatus !== 'open'
-                ? 'rgba(214,154,10,0.18)'
-                : 'rgba(31,167,74,0.18)'
-            }`,
-          }}
-        />
-        <span className="text-sm font-semibold text-ink-900 tracking-tight">{statusText}</span>
+    <header
+      className="sticky top-0 z-10 bg-bg/90 backdrop-blur border-b border-border"
+    >
+      <div className="px-4 lg:px-6 py-3.5 flex items-center gap-3">
+        {/* Brand */}
+        <div className="flex items-center gap-2.5 min-w-0">
+          <BrandMark size={28} />
+          <div className="flex flex-col leading-none min-w-0">
+            <span
+              className="font-display font-semibold text-fg tracking-tight truncate"
+              style={{ fontSize: 14, letterSpacing: '-0.01em' }}
+            >
+              x-alpaca-trading-bot
+            </span>
+            <span
+              className="mono-label mt-1 truncate"
+              style={{ fontSize: 9, letterSpacing: '0.18em' }}
+            >
+              tweets · options · paper
+            </span>
+          </div>
+        </div>
 
-        <div className="ml-auto flex items-center gap-3">
+        {/* Right cluster */}
+        <div className="ml-auto flex items-center gap-3 shrink-0">
+          <div className="flex items-center gap-2">
+            <span
+              className="inline-block w-2 h-2 rounded-full"
+              style={{
+                background: dotColor,
+                boxShadow: `0 0 0 3px ${glow}`,
+              }}
+            />
+            <span
+              className="font-mono uppercase tracking-wider text-fg-muted"
+              style={{ fontSize: 10, letterSpacing: '0.16em' }}
+            >
+              {statusText}
+            </span>
+          </div>
+
           {pnlNum !== null && (
             <span className={`text-sm font-mono ${pnlColorClass(pnlNum)}`}>
               {fmtMoney(pnlNum)}
             </span>
           )}
+
           <button
             onClick={() => setOpen((o) => !o)}
-            className="text-ink-500 hover:text-ink-900 text-xs flex items-center gap-1 transition-colors"
+            className="text-fg-dim hover:text-fg text-xs flex items-center gap-1 transition-colors"
             aria-expanded={open}
             aria-label="Toggle system status details"
           >
-            <span className="font-mono uppercase tracking-wider text-[10px]">details</span>
+            <span
+              className="font-mono uppercase tracking-wider"
+              style={{ fontSize: 10, letterSpacing: '0.16em' }}
+            >
+              details
+            </span>
             <svg
               className={`w-3 h-3 transition-transform ${open ? 'rotate-180' : ''}`}
               viewBox="0 0 12 12"
@@ -111,7 +144,7 @@ function SystemStatus({
     : 0
 
   return (
-    <div className="px-4 pb-4 border-t border-hairline grid grid-cols-2 sm:grid-cols-4 gap-3 pt-3">
+    <div className="px-4 lg:px-6 pb-4 border-t border-border grid grid-cols-2 sm:grid-cols-4 gap-3 pt-3">
       <Stat label="X stream" value={xLabel.text} tone={xLabel.tone} />
       <Stat
         label="Alpaca"
@@ -128,11 +161,11 @@ function SystemStatus({
       <div className="col-span-2 sm:col-span-4 mt-1">
         <div className="flex justify-between mono-label mb-1.5" style={{ fontSize: 10 }}>
           <span>Daily loss</span>
-          <span className="normal-case tracking-normal text-ink-500">
+          <span className="normal-case tracking-normal text-fg-dim">
             limit {fmtMoney(-dailyLossLimit)} ({fmtPct(-dailyLossKillPct)})
           </span>
         </div>
-        <div className="h-1.5 rounded-full bg-ink-100 overflow-hidden">
+        <div className="h-1.5 rounded-full bg-elevated overflow-hidden">
           <div
             className={`h-full transition-all ${progressPct >= 80 ? 'bg-negative' : 'bg-warning'}`}
             style={{ width: `${progressPct}%` }}
@@ -143,7 +176,7 @@ function SystemStatus({
   )
 }
 
-function Stat({ label, value, tone = 'text-ink-900' }) {
+function Stat({ label, value, tone = 'text-fg' }) {
   return (
     <div>
       <div className="mono-label" style={{ fontSize: 10 }}>{label}</div>

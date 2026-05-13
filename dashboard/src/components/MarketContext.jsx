@@ -1,8 +1,8 @@
 import { fmtPct } from '../util'
 
 /**
- * Market context — Hyper light tokens. Used in both Home (collapsible)
- * and Details views.
+ * Market context — APDF dark tokens. Used in both Home (inside a
+ * CollapsibleSection) and the legacy Details view.
  */
 export default function MarketContext({ snapshot, latestSectorString }) {
   const vix = snapshot?.vix
@@ -23,17 +23,20 @@ export default function MarketContext({ snapshot, latestSectorString }) {
       <div className="mt-4">
         <div className="mono-label mb-2" style={{ fontSize: 10 }}>Sector heatmap</div>
         {sectors.length === 0 && (
-          <div className="text-xs text-ink-500">no recent data</div>
+          <div className="text-xs text-fg-dim">no recent data</div>
         )}
         <div className="grid grid-cols-3 gap-1.5">
           {sectors.map(({ symbol, pct }) => (
             <div
               key={symbol}
-              className={`px-2 py-1.5 rounded-lg text-xs font-mono ${
-                pct >= 0
-                  ? 'bg-[var(--green-500)]/10 text-positive'
-                  : 'bg-[var(--danger)]/10 text-negative'
-              }`}
+              className="px-2 py-1.5 rounded-md text-xs font-mono"
+              style={{
+                background: pct >= 0
+                  ? 'rgba(34,197,94,0.10)'
+                  : 'rgba(239,68,68,0.10)',
+                color: pct >= 0 ? 'var(--positive)' : 'var(--negative)',
+                border: '1px solid var(--border)',
+              }}
             >
               <span className="font-semibold">{symbol}</span>{' '}
               <span>{fmtPct(pct)}</span>
@@ -49,9 +52,15 @@ function BigStat({ label, value, accent }) {
   const tone =
     accent === 'positive' ? 'text-positive'
     : accent === 'negative' ? 'text-negative'
-    : 'text-ink-900'
+    : 'text-fg'
   return (
-    <div className="bg-surface-2 rounded-xl px-3 py-2.5 border border-hairline">
+    <div
+      className="rounded-md px-3 py-2.5"
+      style={{
+        background: 'var(--surface)',
+        border: '1px solid var(--border)',
+      }}
+    >
       <div className="mono-label" style={{ fontSize: 10 }}>{label}</div>
       <div className={`text-base font-mono font-medium mt-0.5 ${tone}`}>{value}</div>
     </div>

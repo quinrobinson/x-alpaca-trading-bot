@@ -2,7 +2,7 @@ import { useMemo, useState } from 'react'
 import { fmtMoney, fmtPct, fmtTime, pnlColorClass } from '../util'
 
 /**
- * Legacy performance history panel (used in /details). Hyper light tokens.
+ * Legacy performance history panel (used in /details). APDF dark tokens.
  */
 export default function PerformanceHistory({ performance }) {
   const [sortKey, setSortKey] = useState('closed_at')
@@ -32,13 +32,10 @@ export default function PerformanceHistory({ performance }) {
   }
 
   return (
-    <div
-      className="bg-surface rounded-card p-5"
-      style={{ boxShadow: 'var(--shadow-card)' }}
-    >
+    <div className="card p-5">
       <div className="flex items-center justify-between mb-4">
         <h2 className="mono-label" style={{ fontSize: 11 }}>Performance</h2>
-        <span className="text-xs text-ink-500">{stats.total_trades ?? 0} trades</span>
+        <span className="text-xs text-fg-dim">{stats.total_trades ?? 0} trades</span>
       </div>
 
       <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-6 gap-3 mb-5">
@@ -58,7 +55,7 @@ export default function PerformanceHistory({ performance }) {
       <div className="overflow-x-auto">
         <table className="w-full text-xs">
           <thead>
-            <tr className="text-ink-500 text-left">
+            <tr className="text-fg-dim text-left">
               <Th onClick={() => toggleSort('closed_at')} active={sortKey === 'closed_at'} dir={sortDir}>Closed</Th>
               <Th onClick={() => toggleSort('ticker')} active={sortKey === 'ticker'} dir={sortDir}>Ticker</Th>
               <Th>Strike</Th>
@@ -71,20 +68,20 @@ export default function PerformanceHistory({ performance }) {
           </thead>
           <tbody>
             {sorted.length === 0 && (
-              <tr><td className="py-3 text-ink-500" colSpan={8}>No trades yet.</td></tr>
+              <tr><td className="py-3 text-fg-dim" colSpan={8}>No trades yet.</td></tr>
             )}
             {sorted.map((t) => {
               const pnl = Number(t.pnl_pct)
               return (
-                <tr key={t.id} className="border-t border-hairline">
-                  <td className="py-2 text-ink-600">{fmtTime(t.closed_at)}</td>
-                  <td className="py-2 font-mono text-ink-900">{t.ticker} {t.option_type?.[0]?.toUpperCase()}</td>
-                  <td className="py-2 text-ink-700">${t.strike}</td>
-                  <td className="py-2 font-mono text-ink-700">{t.entry_price}</td>
-                  <td className="py-2 font-mono text-ink-700">{t.exit_price}</td>
+                <tr key={t.id} className="border-t border-border">
+                  <td className="py-2 text-fg-muted">{fmtTime(t.closed_at)}</td>
+                  <td className="py-2 font-mono text-fg">{t.ticker} {t.option_type?.[0]?.toUpperCase()}</td>
+                  <td className="py-2 text-fg-muted">${t.strike}</td>
+                  <td className="py-2 font-mono text-fg-muted">{t.entry_price}</td>
+                  <td className="py-2 font-mono text-fg-muted">{t.exit_price}</td>
                   <td className={`py-2 font-mono font-medium ${pnlColorClass(pnl)}`}>{fmtPct(pnl)}</td>
-                  <td className="py-2 text-ink-500">{t.exit_reason}</td>
-                  <td className="py-2 text-ink-500 font-mono">{t.hold_minutes}m</td>
+                  <td className="py-2 text-fg-dim">{t.exit_reason}</td>
+                  <td className="py-2 text-fg-dim font-mono">{t.hold_minutes}m</td>
                 </tr>
               )
             })}
@@ -96,7 +93,7 @@ export default function PerformanceHistory({ performance }) {
 }
 
 function StatCard({ label, value, positive, negative, colorize }) {
-  let tone = 'text-ink-900'
+  let tone = 'text-fg'
   if (positive) tone = 'text-positive'
   if (negative) tone = 'text-negative'
   if (colorize === 'signed') {
@@ -104,7 +101,13 @@ function StatCard({ label, value, positive, negative, colorize }) {
     tone = n < 0 ? 'text-negative' : 'text-positive'
   }
   return (
-    <div className="bg-surface-2 rounded-xl px-3 py-2.5 border border-hairline">
+    <div
+      className="rounded-md px-3 py-2.5"
+      style={{
+        background: 'var(--surface)',
+        border: '1px solid var(--border)',
+      }}
+    >
       <div className="mono-label" style={{ fontSize: 10 }}>{label}</div>
       <div className={`text-base font-mono font-medium mt-0.5 ${tone}`}>{value}</div>
     </div>
@@ -114,7 +117,7 @@ function StatCard({ label, value, positive, negative, colorize }) {
 function Th({ children, onClick, active, dir }) {
   return (
     <th
-      className={`py-2 pr-3 font-medium ${onClick ? 'cursor-pointer select-none hover:text-ink-900' : ''} ${active ? 'text-ink-900' : ''}`}
+      className={`py-2 pr-3 font-medium ${onClick ? 'cursor-pointer select-none hover:text-fg' : ''} ${active ? 'text-fg' : ''}`}
       onClick={onClick}
     >
       {children}
@@ -136,7 +139,7 @@ function buildEquityCurve(trades) {
 
 function EquityCurve({ points }) {
   if (points.length < 2) {
-    return <div className="text-xs text-ink-500 italic">Need ≥ 2 trades for a curve.</div>
+    return <div className="text-xs text-fg-dim italic">Need ≥ 2 trades for a curve.</div>
   }
   const w = 600, h = 60
   const min = Math.min(...points.map(p => p.equity), 0)
@@ -151,14 +154,14 @@ function EquityCurve({ points }) {
     })
     .join(' ')
   const lastPositive = points[points.length - 1].equity >= 0
-  const stroke = lastPositive ? 'var(--green-500)' : 'var(--danger)'
+  const stroke = lastPositive ? 'var(--positive)' : 'var(--negative)'
   return (
     <svg viewBox={`0 0 ${w} ${h}`} className="w-full h-16">
       <line
         x1={0} x2={w}
         y1={h - ((0 - min) / span) * h}
         y2={h - ((0 - min) / span) * h}
-        stroke="var(--ink-200)"
+        stroke="var(--border)"
         strokeWidth={1}
         strokeDasharray="2,3"
       />

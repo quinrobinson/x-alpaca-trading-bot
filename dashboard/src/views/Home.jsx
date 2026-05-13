@@ -1,5 +1,4 @@
 import { useCallback, useEffect, useState } from 'react'
-import { Link } from 'react-router-dom'
 import Header from '../components/v2/Header.jsx'
 import OpenPositionCard from '../components/v2/OpenPositionCard.jsx'
 import Timeline from '../components/v2/Timeline.jsx'
@@ -122,10 +121,7 @@ export default function Home() {
         {/* Left column (mobile: stacked first) — open position + stats */}
         <aside className="lg:col-span-1 space-y-4">
           {positions.length === 0 ? (
-            <section
-              className="bg-surface rounded-card p-6 text-center text-sm text-ink-500"
-              style={{ boxShadow: 'var(--shadow-card)' }}
-            >
+            <section className="card p-6 text-center text-sm text-fg-dim">
               No open positions.
             </section>
           ) : (
@@ -159,11 +155,19 @@ export default function Home() {
         </section>
       </main>
 
-      <footer className="px-4 lg:px-6 py-4 text-xs text-ink-500 flex items-center justify-between border-t border-hairline mt-4">
-        <span className="font-mono uppercase tracking-wider" style={{ fontSize: 10 }}>
+      <footer className="px-4 lg:px-6 py-4 text-xs text-fg-dim flex items-center justify-between border-t border-border mt-4">
+        <span
+          className="font-mono uppercase tracking-wider"
+          style={{ fontSize: 10, letterSpacing: '0.16em' }}
+        >
           x-alpaca-trading-bot
         </span>
-        <Link to="/details" className="hover:text-ink-900 transition-colors">advanced view →</Link>
+        <span
+          className="font-mono uppercase tracking-wider text-fg-faint"
+          style={{ fontSize: 10, letterSpacing: '0.16em' }}
+        >
+          paper · alpaca
+        </span>
       </footer>
     </div>
   )

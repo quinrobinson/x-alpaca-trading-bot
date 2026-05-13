@@ -36,10 +36,10 @@ export function fmtRelative(iso, now = Date.now()) {
   return `${Math.floor(diff / 3600)}h ago`
 }
 
-// Color a P&L number red/green. Maps to Hyper semantic tokens.
+// Color a P&L number red/green. Maps to APDF semantic tokens.
 export function pnlColorClass(value) {
-  if (value === null || value === undefined || value === '') return 'text-ink-500'
+  if (value === null || value === undefined || value === '') return 'text-fg-dim'
   const n = typeof value === 'number' ? value : Number(value)
-  if (!Number.isFinite(n) || n === 0) return 'text-ink-500'
+  if (!Number.isFinite(n) || n === 0) return 'text-fg-dim'
   return n > 0 ? 'text-positive' : 'text-negative'
 }

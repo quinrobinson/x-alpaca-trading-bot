@@ -1,7 +1,7 @@
 import { fmtMoney, fmtPct, pnlColorClass } from '../util'
 
 /**
- * Legacy position card (used in /details). Hyper light tokens.
+ * Legacy position card (used in /details). APDF dark tokens.
  */
 export default function PositionCard({ position, livePrice, snapshot }) {
   const entry = Number(position.entry_price)
@@ -19,14 +19,14 @@ export default function PositionCard({ position, livePrice, snapshot }) {
   const ratchetLabel = ratchetLabels[position.ratchet_level] ?? 'initial'
 
   return (
-    <div className="bg-surface rounded-card p-5" style={{ boxShadow: 'var(--shadow-card)' }}>
+    <div className="card p-5">
       <div className="flex items-center justify-between">
         <div>
-          <div className="text-lg font-bold text-ink-900 tracking-tight">
+          <div className="text-lg font-display font-semibold text-fg tracking-tight">
             {position.ticker} ${position.strike} {position.option_type?.toUpperCase()?.[0]}
-            <span className="text-sm text-ink-500 ml-2 font-normal">{position.expiration}</span>
+            <span className="text-sm text-fg-dim ml-2 font-normal">{position.expiration}</span>
           </div>
-          <div className="text-xs text-ink-400 font-mono mt-0.5">{position.contract_symbol}</div>
+          <div className="text-xs text-fg-faint font-mono mt-0.5">{position.contract_symbol}</div>
         </div>
         <div className="text-right">
           <div className={`text-xl font-bold tracking-tight ${pnlColorClass(pnl)}`}>{fmtMoney(pnl)}</div>
@@ -40,10 +40,10 @@ export default function PositionCard({ position, livePrice, snapshot }) {
           <span>ENTRY {fmtMoney(entry)}</span>
           <span>TARGET {fmtMoney(target)}</span>
         </div>
-        <div className="relative h-2 bg-ink-100 rounded-full">
+        <div className="relative h-2 rounded-full" style={{ background: 'var(--elevated)' }}>
           <div
-            className="absolute top-0 h-full w-px bg-ink-300"
-            style={{ left: `${entryPct}%` }}
+            className="absolute top-0 h-full w-px"
+            style={{ left: `${entryPct}%`, background: 'var(--border-hover)' }}
           />
           <div
             className={`absolute -top-1 w-2.5 h-4 rounded ${pnl >= 0 ? 'bg-positive' : 'bg-negative'}`}
@@ -66,11 +66,11 @@ export default function PositionCard({ position, livePrice, snapshot }) {
         <Stat label="IV" value={snapshot?.iv} />
       </div>
 
-      <div className="mt-4 flex items-center justify-between text-xs text-ink-600">
-        <span>Ratchet: <span className="text-ink-900 font-medium">{ratchetLabel}</span></span>
-        <span>Qty: <span className="text-ink-900 font-medium">{position.qty}</span></span>
+      <div className="mt-4 flex items-center justify-between text-xs text-fg-muted">
+        <span>Ratchet: <span className="text-fg font-medium">{ratchetLabel}</span></span>
+        <span>Qty: <span className="text-fg font-medium">{position.qty}</span></span>
         <span>
-          Stop order: <span className="text-ink-900 font-mono" style={{ fontSize: 10 }}>{position.stop_order_id ?? '—'}</span>
+          Stop order: <span className="text-fg font-mono" style={{ fontSize: 10 }}>{position.stop_order_id ?? '—'}</span>
         </span>
       </div>
     </div>
@@ -83,7 +83,7 @@ function Stat({ label, value, colorize }) {
   return (
     <div>
       <div className="mono-label" style={{ fontSize: 10 }}>{label}</div>
-      <div className={`text-sm font-mono mt-0.5 ${isNeg ? 'text-negative' : 'text-ink-900'}`}>
+      <div className={`text-sm font-mono mt-0.5 ${isNeg ? 'text-negative' : 'text-fg'}`}>
         {value === null || value === undefined ? '—' : value}
       </div>
     </div>
