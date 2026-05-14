@@ -330,6 +330,10 @@ class Orchestrator:
                 target_account_id=self._cfg.x_target_account_id,
                 on_post=self._on_x_post,
                 on_connect=self._on_stream_connected,
+                # X sends a keep-alive every ~20s during quiet periods; using
+                # it as a heartbeat keeps the kill switch from misfiring on
+                # low-volume target accounts where tweets can be sparse.
+                on_keep_alive=self._on_stream_connected,
             )
             self._stream_listener.filter(threaded=True)
             logger.info("x stream listener started")
@@ -369,12 +373,17 @@ class Orchestrator:
         self._post_queue.put(_StreamEvent(post_id, post_text, posted_at, received_at))
 
     def _on_stream_connected(self) -> None:
-        """Stream callback fired by tweepy on initial connect + each reconnect.
+        """Heartbeat-bump callback for both tweepy events:
 
-        Bumps the heartbeat so the x_stream_disconnected kill switch tracks
-        connection state, not tweet arrival rate — low-volume target accounts
-        (e.g. one author who tweets a few times an hour) would otherwise
-        trip the switch even though the stream is perfectly healthy.
+        - on_connect: fires on initial connect + every reconnect (every
+          ~20 minutes when X idle-closes the stream)
+        - on_keep_alive: fires on X's ~20-second TCP keep-alives during
+          quiet periods between tweets
+
+        Either is sufficient proof the stream is alive, so they share one
+        handler. This decouples the x_stream_disconnected kill switch
+        from tweet arrival rate — a target account that tweets once an
+        hour no longer trips the switch every 60 seconds.
         """
         received_at = datetime.now(timezone.utc)
         with self._lock:

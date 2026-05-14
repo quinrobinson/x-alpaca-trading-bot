@@ -25,7 +25,7 @@ logger = logging.getLogger(__name__)
 
 # Type aliases — keep call sites readable.
 OnPost = Callable[[str, str, datetime], None]
-OnConnect = Callable[[], None]
+OnHeartbeat = Callable[[], None]  # for on_connect AND on_keep_alive
 
 # Matches "from:<numeric_id>" — the only rule we care about right now.
 _RULE_TAG = "target_account"
@@ -39,12 +39,14 @@ class XStreamListener(tweepy.StreamingClient):
         bearer_token: str,
         target_account_id: str,
         on_post: OnPost,
-        on_connect: OnConnect | None = None,
+        on_connect: OnHeartbeat | None = None,
+        on_keep_alive: OnHeartbeat | None = None,
     ) -> None:
         super().__init__(bearer_token=bearer_token, wait_on_rate_limit=True)
         self._target_account_id = target_account_id
         self._on_post = on_post
         self._on_connect_cb = on_connect
+        self._on_keep_alive_cb = on_keep_alive
         self._last_received_at: datetime | None = None
         self._last_received_lock = threading.Lock()
 
@@ -100,6 +102,18 @@ class XStreamListener(tweepy.StreamingClient):
             except Exception:  # noqa: BLE001 — never let a callback kill the stream
                 logger.exception("on_connect callback raised; continuing stream")
 
+    def on_keep_alive(self) -> None:  # type: ignore[override]
+        # X sends a keep-alive (a single "\r\n") every ~20 seconds during
+        # quiet periods so clients know the TCP stream is still healthy.
+        # Tweepy surfaces it via this hook — perfect for refreshing the
+        # kill-switch heartbeat between tweets without depending on the
+        # target account's posting cadence.
+        if self._on_keep_alive_cb is not None:
+            try:
+                self._on_keep_alive_cb()
+            except Exception:  # noqa: BLE001
+                logger.exception("on_keep_alive callback raised; continuing stream")
+
     def on_disconnect(self) -> None:  # type: ignore[override]
         logger.warning("X stream disconnected")
 
@@ -115,7 +129,8 @@ def make_listener(
     bearer_token: str,
     target_account_id: str,
     on_post: OnPost,
-    on_connect: OnConnect | None = None,
+    on_connect: OnHeartbeat | None = None,
+    on_keep_alive: OnHeartbeat | None = None,
 ) -> XStreamListener:
     """Factory: build a listener and configure its filter rule.
 
@@ -123,12 +138,16 @@ def make_listener(
     to actually start streaming. Pulled apart so callers can choose to call
     `.filter(threaded=True)` for a background thread or `.filter()` to block.
 
-    `on_connect` fires on the initial connect and every reconnect. The
-    orchestrator uses it to bump its kill-switch heartbeat so the
-    x_stream_disconnected switch tracks connection state, not tweet rate.
+    `on_connect` fires on the initial connect and every reconnect.
+    `on_keep_alive` fires on X's ~20-second TCP keep-alives during quiet
+    periods. Together they let the orchestrator bump its kill-switch
+    heartbeat so x_stream_disconnected tracks connection health, not
+    tweet rate.
     """
     listener = XStreamListener(
-        bearer_token, target_account_id, on_post, on_connect=on_connect,
+        bearer_token, target_account_id, on_post,
+        on_connect=on_connect,
+        on_keep_alive=on_keep_alive,
     )
     listener.configure_rules()
     return listener

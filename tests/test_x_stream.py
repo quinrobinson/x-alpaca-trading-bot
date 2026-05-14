@@ -48,6 +48,30 @@ def test_on_connect_callback_is_optional() -> None:
     listener.on_connect()
 
 
+def test_on_keep_alive_fires_optional_callback() -> None:
+    fired: list[bool] = []
+    listener = _build_listener(
+        on_post=lambda *a, **kw: None,
+        on_keep_alive=lambda: fired.append(True),
+    )
+    listener.on_keep_alive()
+    assert fired == [True]
+
+
+def test_on_keep_alive_swallows_callback_exception() -> None:
+    def boom() -> None:
+        raise RuntimeError("oops")
+
+    listener = _build_listener(on_post=lambda *a, **kw: None, on_keep_alive=boom)
+    # Must not raise — the stream thread would die otherwise.
+    listener.on_keep_alive()
+
+
+def test_on_keep_alive_callback_is_optional() -> None:
+    listener = _build_listener(on_post=lambda *a, **kw: None)
+    listener.on_keep_alive()
+
+
 def test_on_tweet_updates_last_received_and_calls_on_post() -> None:
     posts: list[tuple[str, str, datetime]] = []
     listener = _build_listener(
