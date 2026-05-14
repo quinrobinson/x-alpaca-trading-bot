@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { fmtMoney, fmtPct, fmtRelative, pnlColorClass } from '../../util'
+import { fmtExpiration, fmtMoney, fmtPct, fmtRelative, pnlColorClass } from '../../util'
 
 /**
  * Open position card — APDF dark.
@@ -34,8 +34,8 @@ export default function OpenPositionCard({ position, livePrice, snapshot }) {
       <header className="flex items-baseline justify-between gap-3">
         <div className="min-w-0">
           <h3 className="text-base font-display font-semibold text-fg tracking-tight truncate">
-            {position.ticker} ${position.strike} {position.option_type?.[0]?.toUpperCase()}
-            <span className="ml-2 text-xs text-fg-dim font-normal">{position.expiration}</span>
+            {position.ticker} ${position.strike}{position.option_type?.[0]?.toUpperCase()}
+            <span className="ml-2 text-xs text-fg-dim font-normal">{fmtExpiration(position.expiration)}</span>
           </h3>
           <div className="font-mono text-fg-faint mt-0.5 truncate" style={{ fontSize: 10 }}>
             {position.contract_symbol}

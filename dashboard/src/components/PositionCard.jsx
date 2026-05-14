@@ -1,4 +1,4 @@
-import { fmtMoney, fmtPct, pnlColorClass } from '../util'
+import { fmtExpiration, fmtMoney, fmtPct, pnlColorClass } from '../util'
 
 /**
  * Legacy position card (used in /details). APDF dark tokens.
@@ -23,8 +23,8 @@ export default function PositionCard({ position, livePrice, snapshot }) {
       <div className="flex items-center justify-between">
         <div>
           <div className="text-lg font-display font-semibold text-fg tracking-tight">
-            {position.ticker} ${position.strike} {position.option_type?.toUpperCase()?.[0]}
-            <span className="text-sm text-fg-dim ml-2 font-normal">{position.expiration}</span>
+            {position.ticker} ${position.strike}{position.option_type?.toUpperCase()?.[0]}
+            <span className="text-sm text-fg-dim ml-2 font-normal">{fmtExpiration(position.expiration)}</span>
           </div>
           <div className="text-xs text-fg-faint font-mono mt-0.5">{position.contract_symbol}</div>
         </div>

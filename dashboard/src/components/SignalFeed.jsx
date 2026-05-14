@@ -1,4 +1,4 @@
-import { fmtTime } from '../util'
+import { fmtExpiration, fmtTime } from '../util'
 
 /**
  * Legacy signal feed (used in /details). APDF dark tokens — tinted
@@ -59,7 +59,7 @@ function SignalRow({ signal }) {
             className="inline-block w-1.5 h-1.5 rounded-full mr-1.5 align-middle"
             style={{ background: dotColor }}
           />
-          {signal.ticker} {signal.option_type?.toUpperCase()?.[0]} ${signal.strike} {signal.expiration}
+          {signal.ticker} ${signal.strike}{signal.option_type?.toUpperCase()?.[0]} {fmtExpiration(signal.expiration)}
         </span>
         <span className="text-fg-dim">{fmtTime(signal.parsed_at)}</span>
       </div>

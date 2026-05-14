@@ -1,4 +1,4 @@
-import { fmtMoney, fmtPct, fmtRelative, pnlColorClass } from '../../util'
+import { fmtExpiration, fmtMoney, fmtPct, fmtRelative, pnlColorClass } from '../../util'
 
 /**
  * Timeline — APDF dark cards, grouped by day.
@@ -130,6 +130,31 @@ function Dot({ color }) {
 }
 
 
+/** Uppercase-mono label + mono value pair: "ENTRY 1.20". */
+function Pair({ label, value }) {
+  return (
+    <span className="inline-flex items-baseline gap-1.5">
+      <span
+        className="font-mono uppercase text-fg-faint"
+        style={{ fontSize: 9, letterSpacing: '0.16em' }}
+      >
+        {label}
+      </span>
+      <span className="font-mono text-fg" style={{ fontSize: 12 }}>
+        {value}
+      </span>
+    </span>
+  )
+}
+
+
+function contractLabel(signal) {
+  if (!signal) return null
+  const type = signal.option_type?.[0]?.toUpperCase() ?? ''
+  return `${signal.ticker} $${signal.strike}${type}`
+}
+
+
 function TradeCard({ item }) {
   const pnlPct = Number(item.trade.pnl_pct)
   const pnl = Number(item.trade.gross_pnl)
@@ -153,13 +178,15 @@ function TradeCard({ item }) {
         <span className="text-xs text-fg-dim ml-auto font-mono">{item.trade.hold_minutes}m hold</span>
       </div>
       <p className="mt-2.5 text-sm text-fg-muted leading-snug">"{item.post_text}"</p>
-      <div className="mt-2.5 flex items-center gap-3 text-xs text-fg-dim font-mono">
-        <span className="text-fg">
-          {item.signal.ticker} ${item.signal.strike} {item.signal.option_type?.[0]?.toUpperCase()}
+      <div className="mt-3 pt-3 border-t border-border flex flex-wrap items-baseline gap-x-5 gap-y-2">
+        <span className="font-mono text-fg" style={{ fontSize: 12 }}>
+          {contractLabel(item.signal)}
         </span>
-        <span>{item.signal.expiration}</span>
-        <span className="ml-auto">
-          entry {item.trade.entry_price} → exit {item.trade.exit_price}
+        <Pair label="Exp" value={fmtExpiration(item.signal.expiration)} />
+        <span className="ml-auto inline-flex items-baseline gap-2">
+          <Pair label="Entry" value={item.trade.entry_price} />
+          <span className="text-fg-faint" aria-hidden="true">→</span>
+          <Pair label="Exit" value={item.trade.exit_price} />
         </span>
       </div>
     </CardShell>
@@ -180,13 +207,15 @@ function PositionOpenCard({ item }) {
         </div>
       </div>
       <p className="mt-2.5 text-sm text-fg-muted leading-snug">"{item.post_text}"</p>
-      <div className="mt-2.5 flex items-center gap-3 text-xs text-fg-dim font-mono">
-        <span className="text-fg">
-          {item.signal.ticker} ${item.signal.strike} {item.signal.option_type?.[0]?.toUpperCase()}
+      <div className="mt-3 pt-3 border-t border-border flex flex-wrap items-baseline gap-x-5 gap-y-2">
+        <span className="font-mono text-fg" style={{ fontSize: 12 }}>
+          {contractLabel(item.signal)}
         </span>
-        <span>{item.signal.expiration}</span>
-        <span className="ml-auto">
-          posted {item.signal.posted_price} → live {item.signal.live_ask ?? '—'}
+        <Pair label="Exp" value={fmtExpiration(item.signal.expiration)} />
+        <span className="ml-auto inline-flex items-baseline gap-2">
+          <Pair label="Posted" value={item.signal.posted_price} />
+          <span className="text-fg-faint" aria-hidden="true">→</span>
+          <Pair label="Live" value={item.signal.live_ask ?? '—'} />
         </span>
       </div>
     </CardShell>
@@ -207,14 +236,16 @@ function RejectedCard({ item }) {
         </div>
       </div>
       <p className="mt-2.5 text-sm text-fg-muted leading-snug">"{item.post_text}"</p>
-      <div className="mt-2.5 flex items-center gap-3 text-xs text-fg-dim font-mono">
-        <span>
-          {item.signal.ticker} ${item.signal.strike} {item.signal.option_type?.[0]?.toUpperCase()}
+      <div className="mt-3 pt-3 border-t border-border flex flex-wrap items-baseline gap-x-5 gap-y-2">
+        <span className="font-mono text-fg-muted" style={{ fontSize: 12 }}>
+          {contractLabel(item.signal)}
         </span>
-        <span>{item.signal.expiration}</span>
+        <Pair label="Exp" value={fmtExpiration(item.signal.expiration)} />
         {item.signal.live_ask && (
-          <span className="ml-auto">
-            posted {item.signal.posted_price} vs live {item.signal.live_ask}
+          <span className="ml-auto inline-flex items-baseline gap-2">
+            <Pair label="Posted" value={item.signal.posted_price} />
+            <span className="text-fg-faint" aria-hidden="true">vs</span>
+            <Pair label="Live" value={item.signal.live_ask} />
           </span>
         )}
       </div>

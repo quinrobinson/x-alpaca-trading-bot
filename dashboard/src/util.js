@@ -25,6 +25,17 @@ export function fmtTime(iso) {
   }
 }
 
+// Render an option expiration as M/D (e.g. "2026-05-16" → "5/16").
+// Parse from the ISO string directly to avoid UTC → local timezone drift.
+export function fmtExpiration(value) {
+  if (!value) return '—'
+  const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(String(value))
+  if (m) return `${Number(m[2])}/${Number(m[3])}`
+  const d = new Date(value)
+  if (!Number.isFinite(d.getTime())) return String(value)
+  return `${d.getMonth() + 1}/${d.getDate()}`
+}
+
 export function fmtRelative(iso, now = Date.now()) {
   if (!iso) return '—'
   const t = new Date(iso).getTime()
