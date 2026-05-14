@@ -155,6 +155,33 @@ function contractLabel(signal) {
 }
 
 
+/**
+ * ASK with drift-from-tweet in parens. The tweet's price is already
+ * implicit in the quoted post above, so the only thing left to surface
+ * is the current ask + how far it moved.
+ */
+function AskWithDrift({ tweetPrice, ask }) {
+  const t = Number(tweetPrice)
+  const a = Number(ask)
+  const drift = Number.isFinite(t) && t > 0 && Number.isFinite(a)
+    ? (a - t) / t
+    : null
+  return (
+    <span className="inline-flex items-baseline gap-2">
+      <Pair label="Ask" value={ask ?? '—'} />
+      {drift != null && (
+        <span
+          className="font-mono text-fg-dim"
+          style={{ fontSize: 11 }}
+        >
+          ({fmtPct(drift)})
+        </span>
+      )}
+    </span>
+  )
+}
+
+
 function TradeCard({ item }) {
   const pnlPct = Number(item.trade.pnl_pct)
   const pnl = Number(item.trade.gross_pnl)
@@ -212,10 +239,8 @@ function PositionOpenCard({ item }) {
           {contractLabel(item.signal)}
         </span>
         <Pair label="Exp" value={fmtExpiration(item.signal.expiration)} />
-        <span className="ml-auto inline-flex items-baseline gap-2">
-          <Pair label="Tweet" value={item.signal.posted_price} />
-          <span className="text-fg-faint" aria-hidden="true">→</span>
-          <Pair label="Ask" value={item.signal.live_ask ?? '—'} />
+        <span className="ml-auto">
+          <AskWithDrift tweetPrice={item.signal.posted_price} ask={item.signal.live_ask} />
         </span>
       </div>
     </CardShell>
@@ -242,10 +267,8 @@ function RejectedCard({ item }) {
         </span>
         <Pair label="Exp" value={fmtExpiration(item.signal.expiration)} />
         {item.signal.live_ask && (
-          <span className="ml-auto inline-flex items-baseline gap-2">
-            <Pair label="Tweet" value={item.signal.posted_price} />
-            <span className="text-fg-faint" aria-hidden="true">vs</span>
-            <Pair label="Ask" value={item.signal.live_ask} />
+          <span className="ml-auto">
+            <AskWithDrift tweetPrice={item.signal.posted_price} ask={item.signal.live_ask} />
           </span>
         )}
       </div>
