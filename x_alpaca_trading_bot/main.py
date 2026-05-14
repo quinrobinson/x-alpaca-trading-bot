@@ -72,6 +72,13 @@ OPTION_CONTRACT_MULTIPLIER = Decimal("100")
 # Rejection reason emitted when no whole-contract size fits the spend cap.
 TOO_EXPENSIVE_REASON = "too_expensive"
 
+# Kill switches that should auto-clear when the underlying condition
+# recovers. The orchestrator strips these from active_switches before
+# each risk evaluation so risk_manager.evaluate recomputes them fresh
+# from heartbeat data. Capital switches (daily_loss, consecutive_losses)
+# are sticky and persist across calls.
+_CONNECTION_SWITCHES = frozenset({"x_stream_disconnected", "alpaca_disconnected"})
+
 
 def _compute_qty(live_ask: Decimal, rcfg: BotConfig) -> int:
     """Derive contract qty from the operator's spend cap.
@@ -799,17 +806,22 @@ class Orchestrator:
         except Exception:  # noqa: BLE001
             logger.warning("get_clock failed; market_open=False")
 
-        # When the operator has explicitly disabled the X stream, suppress
-        # the x_stream_disconnected kill switch by keeping the heartbeat
-        # fresh and stripping it from active_switches if it was tripped
-        # before the operator flipped the flag.
+        # Connection switches (x_stream_disconnected, alpaca_disconnected)
+        # must auto-clear when the heartbeats recover. risk_manager.evaluate
+        # always unions newly-tripped with active_switches, so once a
+        # connection switch is in active_switches it would persist forever
+        # even after the connection healed. Strip them here so evaluate
+        # recomputes them fresh from the heartbeat data each tick. Capital
+        # switches (daily_loss, consecutive_losses) DO need to persist, so
+        # they stay in active_switches as before.
         last_x = self._state.last_x_received_at
-        active = self._state.active_switches
+        active = self._state.active_switches - _CONNECTION_SWITCHES
         if self._runtime_config().disable_x_stream:
+            # Operator pause: keep the heartbeat fresh so the switch
+            # doesn't re-trip in risk_manager.evaluate this call.
             last_x = now
-            if "x_stream_disconnected" in active:
-                active = frozenset(active) - {"x_stream_disconnected"}
-                self._state = replace(self._state, active_switches=active)
+        if active != self._state.active_switches:
+            self._state = replace(self._state, active_switches=active)
 
         return risk_manager.SessionState(
             starting_equity=self._state.starting_equity,

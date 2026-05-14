@@ -510,6 +510,22 @@ def test_orchestrator_on_stream_connected_bumps_heartbeat(conn: psycopg.Connecti
     assert orch._post_queue.qsize() == 0
 
 
+def test_x_stream_disconnected_auto_clears_when_heartbeat_recovers(conn: psycopg.Connection) -> None:
+    """Once x_stream_disconnected is in active_switches, a fresh heartbeat
+    must clear it on the next risk pulse. Previously the switch persisted
+    because risk_manager.evaluate unions newly-tripped with active_switches,
+    so the connection switches need to be stripped before the call."""
+    orch, _, _ = _orch(conn=conn, seed_heartbeats=True)
+    # Simulate the switch being tripped earlier.
+    orch._state.active_switches = frozenset({"x_stream_disconnected"})
+    # Heartbeat is fresh (seed_heartbeats=True set it to NOW_UTC-5s).
+    state = orch._build_session_state(NOW_UTC)
+    # Connection switches are dropped from the state passed to evaluate.
+    assert "x_stream_disconnected" not in state.active_switches
+    # And on the orchestrator's own state too.
+    assert "x_stream_disconnected" not in orch._state.active_switches
+
+
 # ---- Spend-cap sizing + runtime config ---------------------------------
 
 class _StubConfigStore:
