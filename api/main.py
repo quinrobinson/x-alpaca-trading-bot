@@ -268,6 +268,7 @@ def build_production_app() -> FastAPI:
     import anthropic
 
     from x_alpaca_trading_bot import db, executor as exec_mod
+    from x_alpaca_trading_bot.alerts import TelegramNotifier
     from x_alpaca_trading_bot.config import Config, assert_paper_mode
     from x_alpaca_trading_bot.config_store import BotConfigStore
     from x_alpaca_trading_bot.data_service import DataService
@@ -312,10 +313,20 @@ def build_production_app() -> FastAPI:
     sched = SnapshotScheduler()
     anthro = anthropic.Anthropic(api_key=cfg.anthropic_api_key)
 
+    # Optional Telegram notifier. Skip if creds are placeholders to avoid
+    # spamming a token-less endpoint with 401s.
+    notifier: TelegramNotifier | None = None
+    if cfg.telegram_bot_token and cfg.telegram_chat_id:
+        notifier = TelegramNotifier(
+            bot_token=cfg.telegram_bot_token,
+            chat_id=cfg.telegram_chat_id,
+        )
+
     orchestrator = Orchestrator(
         config=cfg, conn=conn, data_service=ds, executor=executor,
         scheduler=sched, anthropic_client=anthro,
         config_store=config_store,
+        notifier=notifier,
     )
 
     app = create_app(

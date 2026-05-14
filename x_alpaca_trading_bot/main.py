@@ -38,6 +38,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from x_alpaca_trading_bot import db, executor as exec_mod, journal, snapshot
+from x_alpaca_trading_bot.alerts import TelegramNotifier
 from x_alpaca_trading_bot.config import Config, assert_paper_mode
 from x_alpaca_trading_bot.config_store import BotConfig, BotConfigStore
 from x_alpaca_trading_bot.data_service import (
@@ -155,6 +156,7 @@ class Orchestrator:
         tick_seconds: float = DEFAULT_TICK_SECONDS,
         deploy_dir: Path | None = None,
         config_store: BotConfigStore | None = None,
+        notifier: TelegramNotifier | None = None,
     ) -> None:
         self._cfg = config
         self._conn = conn
@@ -171,6 +173,10 @@ class Orchestrator:
         # missing store falls back to the static Config values in
         # `_runtime_config()`.
         self._config_store = config_store
+        # Optional Telegram alerter. Test fixtures pass None; production
+        # builds it in api.main from Config.telegram_bot_token + chat_id.
+        # All notifier calls are guarded with `if self._notifier is not None`.
+        self._notifier = notifier
 
         self._post_queue: "queue.Queue[_StreamEvent]" = queue.Queue()
         self._open_positions: dict[int, PositionRecord] = {}
@@ -635,6 +641,17 @@ class Orchestrator:
             "fill_price": str(fill.fill_price), "stop_price": str(stop_price),
         })
 
+        if self._notifier is not None:
+            self._notifier.notify_trade_entered(
+                ticker=signal.ticker,
+                option_type=signal.option_type,
+                strike=signal.strike,
+                expiration=signal.expiration,
+                qty=fill.qty,
+                entry_price=fill.fill_price,
+                post_text=event.post_text,
+            )
+
     # ---- Per-position advancement ------------------------------------
 
     def _advance_position(self, record: PositionRecord, now: datetime) -> None:
@@ -757,6 +774,27 @@ class Orchestrator:
             "reason": exit_decision.reason,
         })
 
+        if self._notifier is not None:
+            pnl = (exit_price - record.entry_price) * Decimal(record.qty)
+            pnl_pct = (
+                (exit_price - record.entry_price) / record.entry_price
+                if record.entry_price > 0 else Decimal(0)
+            )
+            hold_minutes = int((now - record.opened_at).total_seconds() // 60)
+            self._notifier.notify_trade_closed(
+                ticker=record.ticker,
+                option_type=record.option_type,
+                strike=record.strike,
+                expiration=record.expiration,
+                qty=record.qty,
+                entry_price=record.entry_price,
+                exit_price=exit_price,
+                pnl=pnl,
+                pnl_pct=pnl_pct,
+                exit_reason=exit_decision.reason,
+                hold_minutes=hold_minutes,
+            )
+
     # ---- Monitor snapshots -------------------------------------------
 
     def _take_monitor_snapshot(self, record: PositionRecord, now: datetime) -> None:
@@ -819,6 +857,12 @@ class Orchestrator:
                 "tripped": list(decision.tripped_switches),
                 "newly": list(decision.newly_tripped),
             })
+            if self._notifier is not None:
+                self._notifier.notify_killswitch_tripped(
+                    newly_tripped=list(decision.newly_tripped),
+                    all_tripped=list(decision.tripped_switches),
+                    reason=decision.reason,
+                )
 
     def _build_session_state(self, now: datetime) -> risk_manager.SessionState:
         today = now.astimezone(timezone.utc).date()

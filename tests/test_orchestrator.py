@@ -273,6 +273,7 @@ def _orch(
     anthropic_responses: list[str] | None = None,
     seed_heartbeats: bool = True,
     config_store: Any | None = None,
+    notifier: Any | None = None,
 ) -> tuple[Orchestrator, FakeAlpacaClient, list[tuple[str, dict]]]:
     fake_alpaca = alpaca or FakeAlpacaClient()
     ex = Executor(trading_client=fake_alpaca)
@@ -292,6 +293,7 @@ def _orch(
         broadcast=record,
         tick_seconds=1.0,
         config_store=config_store,
+        notifier=notifier,
     )
     if seed_heartbeats:
         # Mimic _reconcile_on_startup + an initial stream heartbeat so the
@@ -508,6 +510,42 @@ def test_orchestrator_on_stream_connected_bumps_heartbeat(conn: psycopg.Connecti
     assert orch._state.last_x_received_at is not None
     # No queued post — this is a connection-state heartbeat, not a tweet.
     assert orch._post_queue.qsize() == 0
+
+
+class _StubNotifier:
+    """Records each notify_* call so tests can assert the right one fired."""
+
+    def __init__(self) -> None:
+        self.entered: list[dict] = []
+        self.closed: list[dict] = []
+        self.killswitch: list[dict] = []
+
+    def notify_trade_entered(self, **kw) -> None:
+        self.entered.append(kw)
+
+    def notify_trade_closed(self, **kw) -> None:
+        self.closed.append(kw)
+
+    def notify_killswitch_tripped(self, **kw) -> None:
+        self.killswitch.append(kw)
+
+
+def test_notifier_called_on_trade_entered(conn: psycopg.Connection) -> None:
+    alpaca = FakeAlpacaClient()
+    alpaca.next_fill = Decimal("2.55")
+    notifier = _StubNotifier()
+    orch, _, _ = _orch(
+        conn=conn, alpaca=alpaca, anthropic_responses=[VALID_PARSE_JSON],
+        notifier=notifier,
+    )
+    orch._post_queue.put(_stream_event(posted_at=NOW_UTC - timedelta(seconds=30)))
+    orch.tick(NOW_UTC)
+
+    assert len(notifier.entered) == 1
+    call = notifier.entered[0]
+    assert call["ticker"] == "AAPL"
+    assert call["qty"] >= 1
+    assert call["entry_price"] == Decimal("2.55")
 
 
 def test_x_stream_disconnected_auto_clears_when_heartbeat_recovers(conn: psycopg.Connection) -> None:
