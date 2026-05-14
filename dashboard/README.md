@@ -35,7 +35,9 @@ npm test
 
 ```bash
 npm run build
-# → dist/ is a static bundle, ready for any static host (Vercel, S3, nginx).
+# → dist/ is mounted by FastAPI at the same origin as the API
+#   (see api/main.py:_mount_dashboard). Single login via
+#   Cloudflare Access covers both reads and writes.
 ```
 
 ## Layout

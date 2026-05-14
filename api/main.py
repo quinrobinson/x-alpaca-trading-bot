@@ -33,10 +33,13 @@ import logging
 import os
 import threading
 from contextlib import asynccontextmanager
+from pathlib import Path
 from typing import Any
 
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse
+from fastapi.staticfiles import StaticFiles
 
 from api.routers import debug as debug_router
 from api.routers import performance as performance_router
@@ -55,12 +58,18 @@ def create_app(
     run_orchestrator: bool = False,
     heartbeat_seconds: float = 30.0,
     cors_origins: list[str] | None = None,
+    static_dir: Path | None = None,
 ) -> FastAPI:
     """Build a FastAPI app wired with the given orchestrator + DB conn.
 
-    `cors_origins` defaults to the comma-separated CORS_ORIGINS env var if
-    set, otherwise wildcards "*" for local dev. In production set it to
-    your Vercel dashboard origin, e.g. ["https://x-alpaca-bot.vercel.app"].
+    `static_dir` should point at the built dashboard (``dashboard/dist``).
+    If provided, the API serves the SPA from the same origin, which keeps
+    cookie-based auth (Cloudflare Access) working without CORS gymnastics.
+    Pass ``None`` for headless test runs.
+
+    `cors_origins` is honored even when the dashboard is same-origin —
+    leaving a default of "*" is harmless in that case. Defaults to the
+    comma-separated CORS_ORIGINS env var if set.
     """
     ws_manager = WSManager()
     if cors_origins is None:
@@ -168,7 +177,41 @@ def create_app(
         finally:
             await ws_manager.disconnect(websocket)
 
+    _mount_dashboard(app, static_dir)
     return app
+
+
+def _mount_dashboard(app: FastAPI, static_dir: Path | None) -> None:
+    """Serve the built SPA from the same origin as the API.
+
+    Mounting at the bottom of `create_app` means the explicit API routes
+    (`/healthz`, `/positions`, `/ws`, ...) match first; everything else
+    falls through to the catch-all and gets `index.html`, which is what
+    react-router needs for client-side routing.
+    """
+    if static_dir is None:
+        return
+    if not static_dir.exists():
+        logger.warning("static_dir %s does not exist; SPA not mounted", static_dir)
+        return
+
+    assets_dir = static_dir / "assets"
+    if assets_dir.exists():
+        app.mount("/assets", StaticFiles(directory=assets_dir), name="assets")
+
+    index_file = static_dir / "index.html"
+
+    @app.get("/{full_path:path}", include_in_schema=False)
+    async def spa_fallback(full_path: str) -> FileResponse:
+        # Serve specific top-level static files (favicon, robots.txt, etc.)
+        # directly; otherwise hand back index.html so the SPA router can
+        # resolve the path on the client.
+        candidate = static_dir / full_path
+        if full_path and candidate.is_file():
+            return FileResponse(candidate)
+        if not index_file.is_file():
+            raise HTTPException(status_code=404, detail="dashboard build missing")
+        return FileResponse(index_file)
 
 
 async def _heartbeat_loop(
@@ -212,7 +255,6 @@ def _x_stream_disabled(orchestrator: Any | None) -> bool:
 def build_production_app() -> FastAPI:
     """Build the app with real config + real orchestrator. Imported by uvicorn."""
     import signal
-    from pathlib import Path
 
     import anthropic
 
@@ -259,7 +301,10 @@ def build_production_app() -> FastAPI:
     )
 
     app = create_app(
-        conn=conn, orchestrator=orchestrator, run_orchestrator=True,
+        conn=conn,
+        orchestrator=orchestrator,
+        run_orchestrator=True,
+        static_dir=project_root / "dashboard" / "dist",
     )
 
     # Translate SIGINT / SIGTERM into orchestrator shutdown.

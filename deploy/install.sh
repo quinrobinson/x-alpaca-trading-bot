@@ -16,14 +16,16 @@
 #   REPO_URL=  (required on first install if INSTALL_DIR is empty)
 #   REPO_REF=main
 #   PYTHON=python3.12
+#   NODE_MAJOR=20  (Vite 7 needs Node >= 20)
 #
 # What it does:
-#   1. Install OS deps (python3.12, venv, git) without removing anything.
+#   1. Install OS deps (python3.12, venv, git, Node 20) without removing anything.
 #   2. Create the xalpaca system user + INSTALL_DIR.
 #   3. Clone the repo (or pull if it already exists).
 #   4. Build a Python venv and pip install -e .
-#   5. Install the systemd unit and enable it.
-#   6. Print the next-step checklist.
+#   5. Build the dashboard (npm ci + npm run build → dashboard/dist/).
+#   6. Install the systemd unit and enable it.
+#   7. Print the next-step checklist.
 #
 # What it does NOT do:
 #   - Touch Postgres (Supabase is external).
@@ -39,6 +41,7 @@ API_PORT=${API_PORT:-8000}
 REPO_URL=${REPO_URL:-}
 REPO_REF=${REPO_REF:-main}
 PYTHON=${PYTHON:-python3.12}
+NODE_MAJOR=${NODE_MAJOR:-20}
 SERVICE_NAME=x-alpaca-bot
 
 UPDATE_ONLY=0
@@ -76,6 +79,31 @@ ensure_python() {
             exit 1
             ;;
     esac
+}
+
+ensure_node() {
+    # Vite 7 requires Node >= 20. Ubuntu 24.04 ships Node 18.x in apt, so
+    # we pin to a known-good major via NodeSource. Idempotent: re-runs are
+    # safe and won't replace a newer Node that's already installed.
+    if command -v node >/dev/null 2>&1; then
+        local major
+        major="$(node --version | sed 's/^v//' | cut -d. -f1)"
+        if [[ "$major" -ge "$NODE_MAJOR" ]]; then
+            return
+        fi
+        echo "==> upgrading node ($(node --version) -> v${NODE_MAJOR}.x)"
+    else
+        echo "==> installing node v${NODE_MAJOR}.x"
+    fi
+    apt-get install -y curl ca-certificates gnupg
+    install -d -m 0755 /etc/apt/keyrings
+    curl -fsSL "https://deb.nodesource.com/gpgkey/nodesource-repo.gpg.key" \
+        | gpg --dearmor -o /etc/apt/keyrings/nodesource.gpg
+    chmod 644 /etc/apt/keyrings/nodesource.gpg
+    echo "deb [signed-by=/etc/apt/keyrings/nodesource.gpg] https://deb.nodesource.com/node_${NODE_MAJOR}.x nodistro main" \
+        > /etc/apt/sources.list.d/nodesource.list
+    apt-get update
+    apt-get install -y nodejs
 }
 
 ensure_user() {
@@ -119,6 +147,17 @@ build_venv() {
     echo "==> installing python deps"
     .venv/bin/pip install --quiet --upgrade pip
     .venv/bin/pip install --quiet -e .
+}
+
+build_dashboard() {
+    # FastAPI serves dashboard/dist/ as the SPA at /, so we need the build
+    # output present on the droplet for the same-origin auth (Cloudflare
+    # Access) to actually have something to serve.
+    cd "$INSTALL_DIR/dashboard"
+    echo "==> installing dashboard deps (npm ci)"
+    npm ci --silent
+    echo "==> building dashboard (npm run build)"
+    npm run build --silent
 }
 
 install_systemd_unit() {
@@ -188,8 +227,10 @@ EOF
 main() {
     require_root
     if [[ $UPDATE_ONLY -eq 1 ]]; then
+        ensure_node
         clone_or_update
         build_venv
+        build_dashboard
         # Always re-stamp the systemd unit on --update so changes to the
         # template (TimeoutStopSec, ExecStart args, sandbox flags) actually
         # land. install_systemd_unit is idempotent; daemon-reload is cheap.
@@ -201,9 +242,11 @@ main() {
     fi
 
     ensure_python
+    ensure_node
     ensure_user
     clone_or_update
     build_venv
+    build_dashboard
     install_systemd_unit
     fix_perms
     next_steps

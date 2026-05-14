@@ -40,7 +40,7 @@ The complete build specification lives in `X_ALPACA_OPTIONS_HANDOFF.md` at the p
 
 | Field | Value |
 |---|---|
-| Current phase | Phase 10 — LIVE. Bot deployed to existing DO droplet via Cloudflare Tunnel (`x-alpaca-bot.qr-project.dev`). Dashboard on Vercel. Supabase as prod DB. All 4 acceptance gates earned, reboot test passed. |
+| Current phase | Phase 10 — LIVE. Bot + API + dashboard deployed to existing DO droplet via Cloudflare Tunnel (`x-alpaca-bot.qr-project.dev`). FastAPI serves the SPA at the same origin so a single Cloudflare Access policy gates everything. Supabase as prod DB. All 4 acceptance gates earned, reboot test passed. |
 | Last completed phase | Phase 10. Tags: 1, 3, 4, 5, 7, 8, 9, 10. Phase 6 destructive smoke, Phase 2.a live X connect still pending (X Developer account in CreditsDepleted state). |
 | Last session date | 2026-05-13 |
 | Open issues | (1) X Developer account is in CreditsDepleted (HTTP 402) — `DISABLE_X_STREAM=true` set on the droplet as a workaround. Resolve by adding API credits OR using a different account. (2) Phase 6 destructive gates need market-hours smoke. (3) Polygon VIX may return None on plan tier. (4) IV rank / percentile None until 252-day history exists. (5) StatusBar's "X stream: connected" is misleading when stream is disabled — show "disabled" instead. (6) systemd TimeoutStopSec=30s sometimes SIGKILLs during graceful shutdown; bump to 60s. |
@@ -90,7 +90,7 @@ x_alpaca_trading_bot/
 | Backend API | FastAPI + WebSocket |
 | Database | Supabase (Postgres) |
 | Dashboard | React + Recharts + Tailwind CSS |
-| Deployment | DigitalOcean (bot + API) + Vercel (dashboard) |
+| Deployment | DigitalOcean (bot + API + dashboard, single FastAPI process). Cloudflare Tunnel + Cloudflare Access at the same hostname. |
 | Alerts | Telegram Bot API |
 
 ---
