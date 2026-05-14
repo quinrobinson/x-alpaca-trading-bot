@@ -108,6 +108,7 @@ class XStreamListener(tweepy.StreamingClient):
         # Tweepy surfaces it via this hook — perfect for refreshing the
         # kill-switch heartbeat between tweets without depending on the
         # target account's posting cadence.
+        logger.debug("x_stream keep-alive received")
         if self._on_keep_alive_cb is not None:
             try:
                 self._on_keep_alive_cb()

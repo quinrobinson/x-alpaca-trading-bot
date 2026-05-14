@@ -126,6 +126,13 @@ class OrchestratorState:
     last_alpaca_ok_at: datetime | None = None
     active_switches: frozenset[str] = frozenset()
     consecutive_losses: int = 0
+    # Switches we've already broadcast/notified about this session. Used to
+    # dedupe alerts when a switch keeps re-tripping every tick (e.g. the
+    # connection switches that get stripped from active_switches each tick
+    # for auto-clear). A switch only generates a Telegram alert + WS event
+    # the first time it appears here; subsequent re-trips are silent until
+    # it clears.
+    notified_switches: frozenset[str] = frozenset()
 
 
 # ---- Stream callback payload ----------------------------------------------
@@ -839,28 +846,41 @@ class Orchestrator:
             daily_loss_kill_pct=rcfg.daily_loss_kill_pct,
             max_consecutive_losses=self._cfg.max_consecutive_losses,
         )
-        if decision.newly_tripped:
-            # Log critical event; mirror tripped switches into our state.
-            self._state = replace(
-                self._state, active_switches=frozenset(decision.tripped_switches),
-            )
+
+        # Always mirror the latest tripped set into active_switches so the
+        # rest of the orchestrator (the Header status, _handle_post's
+        # risk-block path) sees current state.
+        tripped = frozenset(decision.tripped_switches)
+        if tripped != self._state.active_switches:
+            self._state = replace(self._state, active_switches=tripped)
+
+        # Dedupe alerts: only fire on switches that aren't already in
+        # `notified_switches`. Without this, connection switches that get
+        # stripped each tick for auto-clear purposes would re-appear in
+        # `newly_tripped` every 5 seconds and spam Telegram.
+        announce = tripped - self._state.notified_switches
+        cleared = self._state.notified_switches - tripped
+        if announce or cleared:
+            self._state = replace(self._state, notified_switches=tripped)
+
+        if announce:
             journal.insert_event(
                 self._conn, ts=now, severity="critical",
                 category="kill_switch",
                 message=decision.reason or "trip",
                 context={
-                    "newly_tripped": list(decision.newly_tripped),
-                    "tripped_switches": list(decision.tripped_switches),
+                    "newly_tripped": sorted(announce),
+                    "tripped_switches": sorted(tripped),
                 },
             )
             self._broadcast("killswitch.tripped", {
-                "tripped": list(decision.tripped_switches),
-                "newly": list(decision.newly_tripped),
+                "tripped": sorted(tripped),
+                "newly": sorted(announce),
             })
             if self._notifier is not None:
                 self._notifier.notify_killswitch_tripped(
-                    newly_tripped=list(decision.newly_tripped),
-                    all_tripped=list(decision.tripped_switches),
+                    newly_tripped=sorted(announce),
+                    all_tripped=sorted(tripped),
                     reason=decision.reason,
                 )
 
