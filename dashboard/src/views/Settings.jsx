@@ -173,7 +173,7 @@ export default function Settings() {
                 disabled={saving}
                 className="rounded-md px-4 py-2 font-mono uppercase tracking-wider transition-opacity disabled:opacity-50"
                 style={{
-                  background: 'var(--grad-brand)',
+                  background: 'var(--brand-orange)',
                   color: '#0F0F0F',
                   fontSize: 11,
                   letterSpacing: '0.16em',

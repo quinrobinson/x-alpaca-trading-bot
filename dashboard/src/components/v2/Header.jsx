@@ -46,7 +46,7 @@ export default function Header({
     <header
       className="sticky top-0 z-10 bg-bg/90 backdrop-blur border-b border-border"
     >
-      {/* Row 1 — identity */}
+      {/* Row 1 — identity + settings */}
       <div className="px-4 lg:px-6 pt-4 pb-2 flex items-center gap-2.5">
         <BrandMark size={28} />
         <span
@@ -55,12 +55,7 @@ export default function Header({
         >
           x-alpaca-trading-bot
         </span>
-        <span
-          className="mono-label ml-auto shrink-0"
-          style={{ fontSize: 10, letterSpacing: '0.18em' }}
-        >
-          tweets · options · paper
-        </span>
+        <SettingsButton />
       </div>
 
       {/* Row 2 — live state */}
@@ -87,26 +82,6 @@ export default function Header({
               {fmtMoney(pnlNum)}
             </span>
           )}
-
-          <Link
-            to="/settings"
-            className="text-fg-dim hover:text-fg transition-colors flex items-center"
-            aria-label="Settings"
-          >
-            <svg
-              width="16"
-              height="16"
-              viewBox="0 0 24 24"
-              fill="none"
-              stroke="currentColor"
-              strokeWidth="1.75"
-              strokeLinecap="round"
-              strokeLinejoin="round"
-            >
-              <circle cx="12" cy="12" r="3" />
-              <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z" />
-            </svg>
-          </Link>
 
           <button
             onClick={() => setOpen((o) => !o)}
@@ -201,5 +176,41 @@ function Stat({ label, value, tone = 'text-fg' }) {
       <div className="mono-label" style={{ fontSize: 10 }}>{label}</div>
       <div className={`text-sm font-medium mt-0.5 ${tone}`}>{value}</div>
     </div>
+  )
+}
+
+
+/**
+ * 28×28 rounded-square button matching the BrandMark footprint — light
+ * gray fill, gear glyph, sits in the top-right of the header.
+ */
+function SettingsButton() {
+  return (
+    <Link
+      to="/settings"
+      aria-label="Settings"
+      className="ml-auto shrink-0 inline-flex items-center justify-center transition-colors text-fg-muted hover:text-fg"
+      style={{
+        width: 28,
+        height: 28,
+        borderRadius: 7,
+        background: 'var(--elevated)',
+        border: '1px solid var(--border)',
+      }}
+    >
+      <svg
+        width="15"
+        height="15"
+        viewBox="0 0 24 24"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="1.75"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      >
+        <circle cx="12" cy="12" r="3" />
+        <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z" />
+      </svg>
+    </Link>
   )
 }

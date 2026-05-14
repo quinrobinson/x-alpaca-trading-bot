@@ -1,6 +1,6 @@
 /**
- * BrandMark — rounded-square mark with an "X" glyph on the signature
- * purple→orange brand gradient. Used in the top-left of the header.
+ * BrandMark — rounded-square mark with an "X" glyph on solid brand
+ * orange. Used in the top-left of the header.
  */
 export default function BrandMark({ size = 28, className = '' }) {
   return (
@@ -10,7 +10,7 @@ export default function BrandMark({ size = 28, className = '' }) {
         width: size,
         height: size,
         borderRadius: 7,
-        background: 'var(--grad-brand)',
+        background: 'var(--brand-orange)',
         boxShadow:
           '0 0 0 1px rgba(255,255,255,0.06), 0 1px 2px rgba(0,0,0,0.6)',
       }}
