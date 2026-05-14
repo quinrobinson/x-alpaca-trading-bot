@@ -213,9 +213,9 @@ function PositionOpenCard({ item }) {
         </span>
         <Pair label="Exp" value={fmtExpiration(item.signal.expiration)} />
         <span className="ml-auto inline-flex items-baseline gap-2">
-          <Pair label="Posted" value={item.signal.posted_price} />
+          <Pair label="Tweet" value={item.signal.posted_price} />
           <span className="text-fg-faint" aria-hidden="true">→</span>
-          <Pair label="Live" value={item.signal.live_ask ?? '—'} />
+          <Pair label="Ask" value={item.signal.live_ask ?? '—'} />
         </span>
       </div>
     </CardShell>
@@ -243,9 +243,9 @@ function RejectedCard({ item }) {
         <Pair label="Exp" value={fmtExpiration(item.signal.expiration)} />
         {item.signal.live_ask && (
           <span className="ml-auto inline-flex items-baseline gap-2">
-            <Pair label="Posted" value={item.signal.posted_price} />
+            <Pair label="Tweet" value={item.signal.posted_price} />
             <span className="text-fg-faint" aria-hidden="true">vs</span>
-            <Pair label="Live" value={item.signal.live_ask} />
+            <Pair label="Ask" value={item.signal.live_ask} />
           </span>
         )}
       </div>
