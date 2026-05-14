@@ -1,14 +1,9 @@
-import { fmtMoney, fmtPct, fmtRelative, fmtTime, pnlColorClass } from '../../util'
+import { fmtMoney, fmtPct, fmtRelative, pnlColorClass } from '../../util'
 
 /**
  * Timeline — APDF dark cards, grouped by day.
- *
- * Two density tiers:
- *   - Full cards for trades + open positions (the moments that matter)
- *   - One-line mini rows for skipped + unactionable (keeps log noise visible
- *     without flooding the scroll)
- *
- * Day eyebrows ("TODAY", "YESTERDAY", "MAY 11") anchor scrolling.
+ * Day eyebrows ("TODAY", "YESTERDAY", "MAY 11") anchor scrolling so the
+ * timeline reads like a log instead of an undifferentiated stack.
  */
 export default function Timeline({ items = [], showRejected, onToggleRejected }) {
   const visible = showRejected
@@ -71,7 +66,7 @@ function DayGroup({ label, count, children }) {
           {count}
         </span>
       </div>
-      <div className="space-y-2">{children}</div>
+      <div className="space-y-3">{children}</div>
     </div>
   )
 }
@@ -81,18 +76,19 @@ function TimelineEntry({ item }) {
   switch (item.kind) {
     case 'trade_closed': return <TradeCard item={item} />
     case 'position_open': return <PositionOpenCard item={item} />
-    case 'signal_rejected': return <MiniRow item={item} kind="skipped" />
-    case 'signal_unactionable': return <MiniRow item={item} kind="not_signal" />
+    case 'signal_rejected': return <RejectedCard item={item} />
+    case 'signal_unactionable': return <UnactionableCard item={item} />
     default: return null
   }
 }
 
 
 /**
- * Full-size tinted-outline card. Used for the moments that matter:
- * closed trades + open positions.
+ * Tinted-outline card.
+ *   - tone: 'win' | 'loss' | 'open' | 'default'
+ *   - dim:  fade overall opacity for skipped entries
  */
-function CardShell({ tone = 'default', children }) {
+function CardShell({ tone = 'default', dim = false, children }) {
   const ring = {
     win:     'rgba(34,197,94,0.45)',
     loss:    'rgba(239,68,68,0.45)',
@@ -114,6 +110,7 @@ function CardShell({ tone = 'default', children }) {
         background: 'var(--card)',
         border: `1px solid ${ring}`,
         boxShadow: glow !== 'transparent' ? `0 0 0 1px ${glow}` : 'none',
+        opacity: dim ? 0.75 : 1,
       }}
     >
       {children}
@@ -197,46 +194,50 @@ function PositionOpenCard({ item }) {
 }
 
 
-/**
- * Compact one-line row for skipped + unactionable entries. Reads like a
- * log — timestamp, contract, reason — without taking the visual real
- * estate of a full card.
- */
-function MiniRow({ item, kind }) {
-  const ts = kind === 'skipped' ? item.signal?.parsed_at : item.posted_at
-  const label = kind === 'skipped'
-    ? `skipped · ${item.signal?.rejection_reason ?? ''}`
-    : 'not a signal'
-  const dotColor = kind === 'skipped' ? 'var(--fg-faint)' : 'var(--border-hover)'
-
-  const contract = kind === 'skipped' && item.signal
-    ? `${item.signal.ticker} ${item.signal.option_type?.[0]?.toUpperCase()} $${item.signal.strike}`
-    : null
-
+function RejectedCard({ item }) {
   return (
-    <div
-      className="flex items-center gap-3 px-3 py-1.5 rounded-md text-xs"
-      style={{ background: 'transparent' }}
-    >
-      <span
-        className="font-mono text-fg-faint shrink-0"
-        style={{ fontSize: 10, letterSpacing: '0.04em', width: 48 }}
-      >
-        {fmtTime(ts)}
-      </span>
-      <Dot color={dotColor} />
-      <span className="mono-label shrink-0" style={{ fontSize: 10, letterSpacing: '0.12em' }}>
-        {label}
-      </span>
-      {contract && (
-        <span className="font-mono text-fg-dim shrink-0" style={{ fontSize: 10 }}>
-          {contract}
+    <CardShell tone="default" dim>
+      <div className="flex items-baseline justify-between gap-3">
+        <div className="mono-label" style={{ fontSize: 10 }}>
+          <Dot color="var(--fg-faint)" />
+          skipped · {item.signal.rejection_reason}
+        </div>
+        <div className="text-fg-dim" style={{ fontSize: 11 }}>
+          {fmtRelative(item.signal.parsed_at)}
+        </div>
+      </div>
+      <p className="mt-2.5 text-sm text-fg-muted leading-snug">"{item.post_text}"</p>
+      <div className="mt-2.5 flex items-center gap-3 text-xs text-fg-dim font-mono">
+        <span>
+          {item.signal.ticker} ${item.signal.strike} {item.signal.option_type?.[0]?.toUpperCase()}
         </span>
-      )}
-      <span className="text-fg-dim truncate" style={{ fontSize: 11 }}>
-        "{item.post_text}"
-      </span>
-    </div>
+        <span>{item.signal.expiration}</span>
+        {item.signal.live_ask && (
+          <span className="ml-auto">
+            posted {item.signal.posted_price} vs live {item.signal.live_ask}
+          </span>
+        )}
+      </div>
+    </CardShell>
+  )
+}
+
+
+function UnactionableCard({ item }) {
+  return (
+    <article
+      className="rounded-card px-4 py-3"
+      style={{
+        background: 'transparent',
+        border: '1px dashed var(--border)',
+      }}
+    >
+      <div className="flex items-baseline justify-between gap-3">
+        <div className="mono-label text-fg-faint" style={{ fontSize: 10 }}>not a signal</div>
+        <div className="text-fg-faint" style={{ fontSize: 11 }}>{fmtRelative(item.posted_at)}</div>
+      </div>
+      <p className="text-xs text-fg-dim mt-1 leading-snug">"{item.post_text}"</p>
+    </article>
   )
 }
 
