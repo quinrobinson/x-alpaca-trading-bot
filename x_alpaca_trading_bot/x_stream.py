@@ -23,8 +23,9 @@ import tweepy
 
 logger = logging.getLogger(__name__)
 
-# Type alias — keeps call sites readable.
+# Type aliases — keep call sites readable.
 OnPost = Callable[[str, str, datetime], None]
+OnConnect = Callable[[], None]
 
 # Matches "from:<numeric_id>" — the only rule we care about right now.
 _RULE_TAG = "target_account"
@@ -38,10 +39,12 @@ class XStreamListener(tweepy.StreamingClient):
         bearer_token: str,
         target_account_id: str,
         on_post: OnPost,
+        on_connect: OnConnect | None = None,
     ) -> None:
         super().__init__(bearer_token=bearer_token, wait_on_rate_limit=True)
         self._target_account_id = target_account_id
         self._on_post = on_post
+        self._on_connect_cb = on_connect
         self._last_received_at: datetime | None = None
         self._last_received_lock = threading.Lock()
 
@@ -87,6 +90,15 @@ class XStreamListener(tweepy.StreamingClient):
 
     def on_connect(self) -> None:  # type: ignore[override]
         logger.info("X stream connected")
+        # Tweepy fires on_connect on the initial connect AND every reconnect,
+        # so this is the right signal for "the stream is alive right now" —
+        # independent of tweet arrival rate. The orchestrator uses it to
+        # bump its kill-switch heartbeat for low-volume target accounts.
+        if self._on_connect_cb is not None:
+            try:
+                self._on_connect_cb()
+            except Exception:  # noqa: BLE001 — never let a callback kill the stream
+                logger.exception("on_connect callback raised; continuing stream")
 
     def on_disconnect(self) -> None:  # type: ignore[override]
         logger.warning("X stream disconnected")
@@ -103,13 +115,20 @@ def make_listener(
     bearer_token: str,
     target_account_id: str,
     on_post: OnPost,
+    on_connect: OnConnect | None = None,
 ) -> XStreamListener:
     """Factory: build a listener and configure its filter rule.
 
     The returned listener must have `.filter(...)` called by the orchestrator
     to actually start streaming. Pulled apart so callers can choose to call
     `.filter(threaded=True)` for a background thread or `.filter()` to block.
+
+    `on_connect` fires on the initial connect and every reconnect. The
+    orchestrator uses it to bump its kill-switch heartbeat so the
+    x_stream_disconnected switch tracks connection state, not tweet rate.
     """
-    listener = XStreamListener(bearer_token, target_account_id, on_post)
+    listener = XStreamListener(
+        bearer_token, target_account_id, on_post, on_connect=on_connect,
+    )
     listener.configure_rules()
     return listener

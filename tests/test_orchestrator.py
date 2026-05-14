@@ -498,6 +498,18 @@ def test_orchestrator_state_tracks_x_heartbeat_via_callback(conn: psycopg.Connec
     assert orch._post_queue.qsize() == 1
 
 
+def test_orchestrator_on_stream_connected_bumps_heartbeat(conn: psycopg.Connection) -> None:
+    """Tweepy reconnects must freshen the kill-switch heartbeat so the
+    x_stream_disconnected switch doesn't trip when a low-volume target
+    account hasn't tweeted in the stall window."""
+    orch, _, _ = _orch(conn=conn, seed_heartbeats=False)
+    assert orch._state.last_x_received_at is None
+    orch._on_stream_connected()
+    assert orch._state.last_x_received_at is not None
+    # No queued post — this is a connection-state heartbeat, not a tweet.
+    assert orch._post_queue.qsize() == 0
+
+
 # ---- Spend-cap sizing + runtime config ---------------------------------
 
 class _StubConfigStore:

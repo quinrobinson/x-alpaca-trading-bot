@@ -322,6 +322,7 @@ class Orchestrator:
                 bearer_token=self._cfg.x_bearer_token,
                 target_account_id=self._cfg.x_target_account_id,
                 on_post=self._on_x_post,
+                on_connect=self._on_stream_connected,
             )
             self._stream_listener.filter(threaded=True)
             logger.info("x stream listener started")
@@ -359,6 +360,18 @@ class Orchestrator:
         with self._lock:
             self._state.last_x_received_at = received_at
         self._post_queue.put(_StreamEvent(post_id, post_text, posted_at, received_at))
+
+    def _on_stream_connected(self) -> None:
+        """Stream callback fired by tweepy on initial connect + each reconnect.
+
+        Bumps the heartbeat so the x_stream_disconnected kill switch tracks
+        connection state, not tweet arrival rate — low-volume target accounts
+        (e.g. one author who tweets a few times an hour) would otherwise
+        trip the switch even though the stream is perfectly healthy.
+        """
+        received_at = datetime.now(timezone.utc)
+        with self._lock:
+            self._state.last_x_received_at = received_at
 
     # ---- Post handling -----------------------------------------------
 
