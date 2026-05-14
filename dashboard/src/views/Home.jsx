@@ -155,20 +155,6 @@ export default function Home() {
         </section>
       </main>
 
-      <footer className="px-4 lg:px-6 py-4 text-xs text-fg-dim flex items-center justify-between border-t border-border mt-4">
-        <span
-          className="font-mono uppercase tracking-wider"
-          style={{ fontSize: 10, letterSpacing: '0.16em' }}
-        >
-          x-alpaca-trading-bot
-        </span>
-        <span
-          className="font-mono uppercase tracking-wider text-fg-faint"
-          style={{ fontSize: 10, letterSpacing: '0.16em' }}
-        >
-          paper · alpaca
-        </span>
-      </footer>
     </div>
   )
 }

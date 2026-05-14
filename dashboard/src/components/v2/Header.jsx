@@ -45,44 +45,42 @@ export default function Header({
     <header
       className="sticky top-0 z-10 bg-bg/90 backdrop-blur border-b border-border"
     >
-      <div className="px-4 lg:px-6 py-3.5 flex items-center gap-3">
-        {/* Brand */}
-        <div className="flex items-center gap-2.5 min-w-0">
-          <BrandMark size={28} />
-          <div className="flex flex-col leading-none min-w-0">
-            <span
-              className="font-display font-semibold text-fg tracking-tight truncate"
-              style={{ fontSize: 14, letterSpacing: '-0.01em' }}
-            >
-              x-alpaca-trading-bot
-            </span>
-            <span
-              className="mono-label mt-1 truncate"
-              style={{ fontSize: 9, letterSpacing: '0.18em' }}
-            >
-              tweets · options · paper
-            </span>
-          </div>
+      {/* Row 1 — identity */}
+      <div className="px-4 lg:px-6 pt-4 pb-2 flex items-center gap-2.5">
+        <BrandMark size={28} />
+        <span
+          className="font-display font-semibold text-fg tracking-tight truncate"
+          style={{ fontSize: 15, letterSpacing: '-0.01em' }}
+        >
+          x-alpaca-trading-bot
+        </span>
+        <span
+          className="mono-label ml-auto shrink-0"
+          style={{ fontSize: 10, letterSpacing: '0.18em' }}
+        >
+          tweets · options · paper
+        </span>
+      </div>
+
+      {/* Row 2 — live state */}
+      <div className="px-4 lg:px-6 pb-3.5 flex items-center gap-3">
+        <div className="flex items-center gap-2">
+          <span
+            className="inline-block w-2 h-2 rounded-full"
+            style={{
+              background: dotColor,
+              boxShadow: `0 0 0 3px ${glow}`,
+            }}
+          />
+          <span
+            className="font-mono uppercase tracking-wider text-fg-muted"
+            style={{ fontSize: 10, letterSpacing: '0.16em' }}
+          >
+            {statusText}
+          </span>
         </div>
 
-        {/* Right cluster */}
         <div className="ml-auto flex items-center gap-3 shrink-0">
-          <div className="flex items-center gap-2">
-            <span
-              className="inline-block w-2 h-2 rounded-full"
-              style={{
-                background: dotColor,
-                boxShadow: `0 0 0 3px ${glow}`,
-              }}
-            />
-            <span
-              className="font-mono uppercase tracking-wider text-fg-muted"
-              style={{ fontSize: 10, letterSpacing: '0.16em' }}
-            >
-              {statusText}
-            </span>
-          </div>
-
           {pnlNum !== null && (
             <span className={`text-sm font-mono ${pnlColorClass(pnlNum)}`}>
               {fmtMoney(pnlNum)}
