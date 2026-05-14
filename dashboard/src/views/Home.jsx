@@ -19,6 +19,7 @@ export default function Home() {
   const [livePrices, setLivePrices] = useState({})
   const [killSwitches, setKillSwitches] = useState([])
   const [marketSectorString, setMarketSectorString] = useState(null)
+  const [marketCtx, setMarketCtx] = useState(null)
   const [showRejected, setShowRejected] = useState(false)
 
   // ---- REST polling ---------------------------------------------------
@@ -44,6 +45,13 @@ export default function Home() {
     } catch (err) { /* swallow */ }
   }, [])
 
+  const fetchMarket = useCallback(async () => {
+    try {
+      const r = await fetch(apiUrl('/market'))
+      if (r.ok) setMarketCtx(await r.json())
+    } catch (err) { /* swallow */ }
+  }, [])
+
   const fetchAll = useCallback(async () => {
     try {
       const [h] = await Promise.all([
@@ -51,13 +59,14 @@ export default function Home() {
         fetchTimeline(),
         fetchPositions(),
         fetchPerformance(),
+        fetchMarket(),
       ])
       if (h) {
         setHealth(h)
         if (Array.isArray(h.active_switches)) setKillSwitches(h.active_switches)
       }
     } catch (err) { /* swallow */ }
-  }, [fetchTimeline, fetchPositions, fetchPerformance])
+  }, [fetchTimeline, fetchPositions, fetchPerformance, fetchMarket])
 
   useEffect(() => {
     fetchAll()
@@ -106,7 +115,11 @@ export default function Home() {
 
   // ---- Render ----------------------------------------------------------
 
-  const firstSnapshot = Object.values(latestSnapshot)[0]
+  // Prefer the WS-driven snapshot (richest data when a position is open),
+  // fall back to /market polling so the section stays populated otherwise.
+  const positionSnapshot = Object.values(latestSnapshot)[0]
+  const marketSnapshot = positionSnapshot ?? marketCtx
+  const sectorString = marketSectorString ?? marketCtx?.sector_etf_trend
 
   return (
     <div className="min-h-screen flex flex-col max-w-3xl mx-auto lg:max-w-6xl">
@@ -139,8 +152,8 @@ export default function Home() {
 
           <CollapsibleSection title="Market context">
             <MarketContext
-              snapshot={firstSnapshot}
-              latestSectorString={marketSectorString}
+              snapshot={marketSnapshot}
+              latestSectorString={sectorString}
             />
           </CollapsibleSection>
         </aside>

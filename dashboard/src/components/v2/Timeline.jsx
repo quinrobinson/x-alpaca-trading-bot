@@ -251,7 +251,7 @@ function RejectedCard({ item }) {
       <div className="flex items-baseline justify-between gap-3">
         <div className="mono-label" style={{ fontSize: 10 }}>
           <Dot color="var(--fg-faint)" />
-          skipped · {item.signal.rejection_reason}
+          skipped · {item.signal.rejection_reason ?? 'unknown'}
         </div>
         <div className="text-fg-dim" style={{ fontSize: 11 }}>
           {fmtRelative(item.signal.parsed_at)}

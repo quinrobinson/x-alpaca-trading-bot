@@ -43,6 +43,7 @@ from fastapi.staticfiles import StaticFiles
 
 from api.routers import config as config_router
 from api.routers import debug as debug_router
+from api.routers import market as market_router
 from api.routers import performance as performance_router
 from api.routers import positions as positions_router
 from api.routers import signals as signals_router
@@ -62,6 +63,7 @@ def create_app(
     cors_origins: list[str] | None = None,
     static_dir: Path | None = None,
     config_store: BotConfigStore | None = None,
+    data_service: Any | None = None,
 ) -> FastAPI:
     """Build a FastAPI app wired with the given orchestrator + DB conn.
 
@@ -138,6 +140,7 @@ def create_app(
     app.state.orchestrator = orchestrator
     app.state.conn = conn
     app.state.config_store = config_store
+    app.state.data_service = data_service
 
     @app.get("/healthz", tags=["meta"])
     def healthz() -> dict[str, Any]:
@@ -158,6 +161,7 @@ def create_app(
     app.include_router(signals_router.router)
     app.include_router(performance_router.router)
     app.include_router(timeline_router.router)
+    app.include_router(market_router.router)
     app.include_router(config_router.router)
     app.include_router(debug_router.router)
 
@@ -320,6 +324,7 @@ def build_production_app() -> FastAPI:
         run_orchestrator=True,
         static_dir=project_root / "dashboard" / "dist",
         config_store=config_store,
+        data_service=ds,
     )
 
     # Translate SIGINT / SIGTERM into orchestrator shutdown.

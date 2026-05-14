@@ -494,11 +494,21 @@ class Orchestrator:
             self._state = replace(
                 self._state, active_switches=frozenset(risk_decision.tripped_switches),
             )
+            # Backfill rejection_reason with the first tripped switch so
+            # the signal isn't an orphan "skipped · null" in the timeline.
+            journal.update_signal_rejection(
+                self._conn, signal_id=signal_id,
+                rejection_reason=risk_decision.reason or "risk_blocked",
+            )
             return
 
         # 4. Submit entry — limit buy at live ask
         if validation.live_ask is None:
             logger.warning("validation accepted but live_ask is None; skipping")
+            journal.update_signal_rejection(
+                self._conn, signal_id=signal_id,
+                rejection_reason="no_live_ask",
+            )
             return
 
         # Size the order from the operator's spend cap. Options trade in
@@ -520,6 +530,10 @@ class Orchestrator:
                     "live_ask": str(validation.live_ask),
                     "max_position_spend_usd": str(rcfg.max_position_spend_usd),
                 },
+            )
+            journal.update_signal_rejection(
+                self._conn, signal_id=signal_id,
+                rejection_reason=TOO_EXPENSIVE_REASON,
             )
             return
 
@@ -551,6 +565,10 @@ class Orchestrator:
                 self._conn, ts=datetime.now(timezone.utc), severity="info",
                 category="executor", message="entry_fill_timeout",
                 context={"signal_id": signal_id, "alpaca_order_id": entry_order.alpaca_order_id},
+            )
+            journal.update_signal_rejection(
+                self._conn, signal_id=signal_id,
+                rejection_reason="fill_timeout",
             )
             return
 

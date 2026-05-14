@@ -108,6 +108,28 @@ def insert_signal(
     return int(row[0])
 
 
+def update_signal_rejection(
+    conn: psycopg.Connection,
+    *,
+    signal_id: int,
+    rejection_reason: str,
+) -> None:
+    """Backfill a rejection_reason on a signal that was validated-accepted
+    but rejected downstream (risk kill switch, spend cap, fill timeout).
+
+    The signal row was inserted at validate-time with rejection_reason=NULL
+    so post-hoc analysis can tell why the bot skipped it. No-op if the
+    row is gone (shouldn't happen, but defensive).
+    """
+    with conn.cursor() as cur:
+        cur.execute(
+            "UPDATE signals SET rejection_reason = %s "
+            "WHERE id = %s AND rejection_reason IS NULL",
+            (rejection_reason, signal_id),
+        )
+    conn.commit()
+
+
 def insert_event(
     conn: psycopg.Connection,
     *,
