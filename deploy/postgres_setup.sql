@@ -155,3 +155,20 @@ CREATE TABLE IF NOT EXISTS events (
     message         TEXT NOT NULL,
     context         JSONB
 );
+
+-- ============================================================
+-- Bot config (single-row, edited at runtime via /config endpoint)
+-- ============================================================
+-- One row, id=1 enforced. Read at the start of every signal so changes
+-- made through the dashboard apply without restarting the service.
+CREATE TABLE IF NOT EXISTS bot_config (
+    id                     INTEGER PRIMARY KEY DEFAULT 1 CHECK (id = 1),
+    max_position_spend_usd NUMERIC(12, 2) NOT NULL DEFAULT 500.00,
+    max_qty_per_position   INTEGER        NOT NULL DEFAULT 10,
+    daily_loss_kill_pct    NUMERIC(6, 4)  NOT NULL DEFAULT 0.03,
+    disable_x_stream       BOOLEAN        NOT NULL DEFAULT FALSE,
+    updated_at             TIMESTAMPTZ    NOT NULL DEFAULT NOW()
+);
+
+INSERT INTO bot_config (id) VALUES (1)
+ON CONFLICT (id) DO NOTHING;

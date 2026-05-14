@@ -41,12 +41,14 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
+from api.routers import config as config_router
 from api.routers import debug as debug_router
 from api.routers import performance as performance_router
 from api.routers import positions as positions_router
 from api.routers import signals as signals_router
 from api.routers import timeline as timeline_router
 from api.ws_manager import WSManager
+from x_alpaca_trading_bot.config_store import BotConfigStore
 
 logger = logging.getLogger(__name__)
 
@@ -59,6 +61,7 @@ def create_app(
     heartbeat_seconds: float = 30.0,
     cors_origins: list[str] | None = None,
     static_dir: Path | None = None,
+    config_store: BotConfigStore | None = None,
 ) -> FastAPI:
     """Build a FastAPI app wired with the given orchestrator + DB conn.
 
@@ -134,6 +137,7 @@ def create_app(
     app.state.ws_manager = ws_manager
     app.state.orchestrator = orchestrator
     app.state.conn = conn
+    app.state.config_store = config_store
 
     @app.get("/healthz", tags=["meta"])
     def healthz() -> dict[str, Any]:
@@ -154,6 +158,7 @@ def create_app(
     app.include_router(signals_router.router)
     app.include_router(performance_router.router)
     app.include_router(timeline_router.router)
+    app.include_router(config_router.router)
     app.include_router(debug_router.router)
 
     @app.websocket("/ws")
@@ -260,6 +265,7 @@ def build_production_app() -> FastAPI:
 
     from x_alpaca_trading_bot import db, executor as exec_mod
     from x_alpaca_trading_bot.config import Config, assert_paper_mode
+    from x_alpaca_trading_bot.config_store import BotConfigStore
     from x_alpaca_trading_bot.data_service import DataService
     from x_alpaca_trading_bot.main import Orchestrator
     from x_alpaca_trading_bot.snapshot import SnapshotScheduler
@@ -281,6 +287,13 @@ def build_production_app() -> FastAPI:
     conn = db.connect(cfg.database_url)
     db.run_migrations(conn, deploy_dir)
 
+    # Seed runtime config from the bot_config table (created by the
+    # migration above). The store is shared between the API routers and
+    # the orchestrator thread so a PATCH from the dashboard takes effect
+    # on the next signal without a restart.
+    config_store = BotConfigStore(conn)
+    config_store.reload()
+
     ds = DataService(
         alpaca_api_key=cfg.alpaca_api_key,
         alpaca_secret_key=cfg.alpaca_secret_key,
@@ -298,6 +311,7 @@ def build_production_app() -> FastAPI:
     orchestrator = Orchestrator(
         config=cfg, conn=conn, data_service=ds, executor=executor,
         scheduler=sched, anthropic_client=anthro,
+        config_store=config_store,
     )
 
     app = create_app(
@@ -305,6 +319,7 @@ def build_production_app() -> FastAPI:
         orchestrator=orchestrator,
         run_orchestrator=True,
         static_dir=project_root / "dashboard" / "dist",
+        config_store=config_store,
     )
 
     # Translate SIGINT / SIGTERM into orchestrator shutdown.

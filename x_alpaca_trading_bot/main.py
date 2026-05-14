@@ -39,6 +39,7 @@ from typing import Any, Callable
 
 from x_alpaca_trading_bot import db, executor as exec_mod, journal, snapshot
 from x_alpaca_trading_bot.config import Config, assert_paper_mode
+from x_alpaca_trading_bot.config_store import BotConfig, BotConfigStore
 from x_alpaca_trading_bot.data_service import (
     DataService,
     MarketDataProvider,
@@ -63,7 +64,28 @@ logger = logging.getLogger(__name__)
 # take any due snapshots, and check the time stop. Configurable via env
 # for tests / smoke runs.
 DEFAULT_TICK_SECONDS = float(os.environ.get("ORCHESTRATOR_TICK_SECONDS", "5"))
-DEFAULT_QTY = int(os.environ.get("BOT_DEFAULT_QTY", "1"))
+
+# Per-contract multiplier — options are priced per share but traded in 100-share
+# contracts. So a $1.20 ask on AAPL230120C100 costs $120 per contract.
+OPTION_CONTRACT_MULTIPLIER = Decimal("100")
+
+# Rejection reason emitted when no whole-contract size fits the spend cap.
+TOO_EXPENSIVE_REASON = "too_expensive"
+
+
+def _compute_qty(live_ask: Decimal, rcfg: BotConfig) -> int:
+    """Derive contract qty from the operator's spend cap.
+
+    qty = floor(max_position_spend_usd / (live_ask × 100)),
+    then clamped to max_qty_per_position. Returns 0 when the cap can't
+    even afford a single contract — the caller should treat that as a
+    "too expensive" rejection rather than place a 0-qty order.
+    """
+    contract_cost = live_ask * OPTION_CONTRACT_MULTIPLIER
+    if contract_cost <= 0:
+        return 0
+    raw = int(rcfg.max_position_spend_usd // contract_cost)
+    return max(0, min(raw, rcfg.max_qty_per_position))
 
 
 # ---- In-memory state shapes -----------------------------------------------
@@ -124,8 +146,8 @@ class Orchestrator:
         anthropic_client: Any,                      # has .messages.create
         broadcast: Callable[[str, dict[str, Any]], None] | None = None,
         tick_seconds: float = DEFAULT_TICK_SECONDS,
-        default_qty: int = DEFAULT_QTY,
         deploy_dir: Path | None = None,
+        config_store: BotConfigStore | None = None,
     ) -> None:
         self._cfg = config
         self._conn = conn
@@ -135,8 +157,13 @@ class Orchestrator:
         self._anthropic = anthropic_client
         self._broadcast = broadcast or (lambda _event, _payload: None)
         self._tick_seconds = tick_seconds
-        self._default_qty = default_qty
         self._deploy_dir = deploy_dir or Path(__file__).resolve().parent.parent / "deploy"
+        # The runtime-tunable settings store (spend cap, qty ceiling, daily
+        # loss kill %, x_stream pause). Optional so test fixtures that
+        # don't care about the dashboard don't have to construct one — a
+        # missing store falls back to the static Config values in
+        # `_runtime_config()`.
+        self._config_store = config_store
 
         self._post_queue: "queue.Queue[_StreamEvent]" = queue.Queue()
         self._open_positions: dict[int, PositionRecord] = {}
@@ -144,6 +171,29 @@ class Orchestrator:
         self._shutdown_event = threading.Event()
         self._stream_listener: Any = None
         self._lock = threading.Lock()
+
+    # ---- Runtime config snapshot --------------------------------------
+
+    def _runtime_config(self) -> BotConfig:
+        """Read-once snapshot of the dashboard-tunable settings.
+
+        Falls back to the static Config when no store is attached (test
+        fixtures); production always supplies the store via
+        `api.main.build_production_app`. Call this at the top of any
+        function that needs a setting and stash the snapshot in a local —
+        re-reading is cheap, but a snapshot keeps the whole function
+        consistent if the operator changes a value mid-evaluation.
+        """
+        if self._config_store is not None:
+            return self._config_store.snapshot()
+        # Test/legacy path: synthesize a BotConfig from the env-driven
+        # Config so callers can read the same attributes.
+        return BotConfig(
+            max_position_spend_usd=Decimal("500.00"),
+            max_qty_per_position=10,
+            daily_loss_kill_pct=self._cfg.daily_loss_kill_pct,
+            disable_x_stream=self._cfg.disable_x_stream,
+        )
 
     # ---- Public lifecycle ---------------------------------------------
 
@@ -239,18 +289,23 @@ class Orchestrator:
     def _start_stream(self) -> None:
         """Wire up the X stream listener with our queue-push callback.
 
-        If DISABLE_X_STREAM=true in config, skip the connect entirely and
-        don't trip the kill switch (operators set this when their X API
-        billing is in a CreditsDepleted state, for example).
+        If `disable_x_stream` is set (operator pause switch, or env-driven
+        when no config_store is attached), skip the connect entirely and
+        suppress the kill switch — operators set this when their X API
+        billing is in a CreditsDepleted state, for example.
+
+        Flipping the toggle on/off through the dashboard suppresses the
+        kill switch live but does NOT reconnect or disconnect the stream
+        — that takes a service restart. The pause is still effective
+        because `_process_post` re-reads the flag and drops incoming
+        posts when disabled.
 
         Any other failure (bad creds, network, tweepy version mismatch) is
         caught and logged. The orchestrator runs in a degraded mode — no
         new signals arrive, but the API, snapshot scheduler, and position
-        management all continue. The x_stream_disconnected kill switch
-        will trip naturally once last_x_received_at goes stale during
-        market hours, and that's the right signal to the operator.
+        management all continue.
         """
-        if self._cfg.disable_x_stream:
+        if self._runtime_config().disable_x_stream:
             logger.info("x_stream disabled via config; skipping connect")
             self._log_stream_disabled(reason="disabled_via_config")
             return
@@ -333,6 +388,14 @@ class Orchestrator:
     def _handle_post(self, event: _StreamEvent, now: datetime) -> None:
         """End-to-end: parse → validate → risk → submit entry → fill → stop."""
         logger.info("handle_post id=%s text=%r", event.post_id, event.post_text[:120])
+        rcfg = self._runtime_config()
+        # Pause switch: the dashboard can flip disable_x_stream at any time.
+        # When it's on we drop incoming posts on the floor — they never get
+        # parsed, validated, or journaled. The kill-switch suppression for
+        # this case is handled in `_build_session_state`.
+        if rcfg.disable_x_stream:
+            logger.info("disable_x_stream=true; dropping post id=%s", event.post_id)
+            return
         # 1. Parse via Claude
         result = parse_post(event.post_text, event.posted_at, self._anthropic)
         actionable = result.signal is not None
@@ -394,7 +457,7 @@ class Orchestrator:
         state = self._build_session_state(now)
         risk_decision = risk_manager.evaluate_and_log(
             self._conn, state, now,
-            daily_loss_kill_pct=self._cfg.daily_loss_kill_pct,
+            daily_loss_kill_pct=rcfg.daily_loss_kill_pct,
             max_consecutive_losses=self._cfg.max_consecutive_losses,
             context={"signal_id": signal_id},
         )
@@ -408,11 +471,34 @@ class Orchestrator:
         if validation.live_ask is None:
             logger.warning("validation accepted but live_ask is None; skipping")
             return
+
+        # Size the order from the operator's spend cap. Options trade in
+        # 100-share contracts, so one contract at $1.20/share costs $120.
+        # Floor to whole contracts, then clamp to MAX_QTY_PER_POSITION.
+        # If the contract is too expensive to buy even one, journal a
+        # rejection rather than placing a 0-qty order.
+        qty = _compute_qty(validation.live_ask, rcfg)
+        if qty < 1:
+            logger.info(
+                "signal_id=%s too_expensive: ask=%s × 100 > spend cap %s",
+                signal_id, validation.live_ask, rcfg.max_position_spend_usd,
+            )
+            journal.insert_event(
+                self._conn, ts=now, severity="info",
+                category="strategy", message=TOO_EXPENSIVE_REASON,
+                context={
+                    "signal_id": signal_id,
+                    "live_ask": str(validation.live_ask),
+                    "max_position_spend_usd": str(rcfg.max_position_spend_usd),
+                },
+            )
+            return
+
         contract_symbol = build_occ_symbol(
             signal.ticker, signal.expiration, signal.option_type, signal.strike,
         )
         entry_order = self._executor.submit_limit_buy(
-            contract_symbol, self._default_qty, validation.live_ask,
+            contract_symbol, qty, validation.live_ask,
         )
         entry_order_row_id = journal.insert_order(
             self._conn, signal_id=signal_id,
@@ -662,9 +748,10 @@ class Orchestrator:
 
     def _risk_pulse(self, now: datetime) -> None:
         state = self._build_session_state(now)
+        rcfg = self._runtime_config()
         decision = risk_manager.evaluate(
             state, now,
-            daily_loss_kill_pct=self._cfg.daily_loss_kill_pct,
+            daily_loss_kill_pct=rcfg.daily_loss_kill_pct,
             max_consecutive_losses=self._cfg.max_consecutive_losses,
         )
         if decision.newly_tripped:
@@ -705,7 +792,7 @@ class Orchestrator:
         # before the operator flipped the flag.
         last_x = self._state.last_x_received_at
         active = self._state.active_switches
-        if self._cfg.disable_x_stream:
+        if self._runtime_config().disable_x_stream:
             last_x = now
             if "x_stream_disconnected" in active:
                 active = frozenset(active) - {"x_stream_disconnected"}

@@ -272,6 +272,7 @@ def _orch(
     alpaca: FakeAlpacaClient | None = None,
     anthropic_responses: list[str] | None = None,
     seed_heartbeats: bool = True,
+    config_store: Any | None = None,
 ) -> tuple[Orchestrator, FakeAlpacaClient, list[tuple[str, dict]]]:
     fake_alpaca = alpaca or FakeAlpacaClient()
     ex = Executor(trading_client=fake_alpaca)
@@ -290,6 +291,7 @@ def _orch(
         anthropic_client=FakeAnthropic(anthropic_responses or []),
         broadcast=record,
         tick_seconds=1.0,
+        config_store=config_store,
     )
     if seed_heartbeats:
         # Mimic _reconcile_on_startup + an initial stream heartbeat so the
@@ -494,3 +496,109 @@ def test_orchestrator_state_tracks_x_heartbeat_via_callback(conn: psycopg.Connec
     assert orch._state.last_x_received_at is not None
     # And the event was queued for the tick
     assert orch._post_queue.qsize() == 1
+
+
+# ---- Spend-cap sizing + runtime config ---------------------------------
+
+class _StubConfigStore:
+    """Minimal in-memory stand-in for BotConfigStore in unit tests."""
+
+    def __init__(self, snap: Any) -> None:
+        self._snap = snap
+
+    def snapshot(self) -> Any:
+        return self._snap
+
+
+def _snapshot(
+    *,
+    max_position_spend_usd: Decimal = Decimal("500.00"),
+    max_qty_per_position: int = 10,
+    daily_loss_kill_pct: Decimal = Decimal("0.03"),
+    disable_x_stream: bool = False,
+):
+    from x_alpaca_trading_bot.config_store import BotConfig
+    return BotConfig(
+        max_position_spend_usd=max_position_spend_usd,
+        max_qty_per_position=max_qty_per_position,
+        daily_loss_kill_pct=daily_loss_kill_pct,
+        disable_x_stream=disable_x_stream,
+    )
+
+
+def test_entry_qty_derived_from_spend_cap(conn: psycopg.Connection) -> None:
+    """A $1000 cap at $2.55/share fills floor(1000 / 255) = 3 contracts."""
+    alpaca = FakeAlpacaClient()
+    alpaca.next_fill = Decimal("2.55")
+    store = _StubConfigStore(_snapshot(max_position_spend_usd=Decimal("1000.00")))
+    orch, _, _ = _orch(
+        conn=conn, alpaca=alpaca, anthropic_responses=[VALID_PARSE_JSON],
+        config_store=store,
+    )
+    orch._post_queue.put(_stream_event(posted_at=NOW_UTC - timedelta(seconds=30)))
+    orch.tick(NOW_UTC)
+
+    with conn.cursor() as cur:
+        cur.execute("SELECT qty FROM orders WHERE order_type = 'limit'")
+        row = cur.fetchone()
+    assert row is not None
+    assert row[0] == 3
+
+
+def test_entry_qty_clamped_to_max_qty_per_position(conn: psycopg.Connection) -> None:
+    """Even with plenty of cap, qty never exceeds max_qty_per_position."""
+    alpaca = FakeAlpacaClient()
+    alpaca.next_fill = Decimal("2.55")
+    store = _StubConfigStore(_snapshot(
+        max_position_spend_usd=Decimal("10000.00"),
+        max_qty_per_position=2,
+    ))
+    orch, _, _ = _orch(
+        conn=conn, alpaca=alpaca, anthropic_responses=[VALID_PARSE_JSON],
+        config_store=store,
+    )
+    orch._post_queue.put(_stream_event(posted_at=NOW_UTC - timedelta(seconds=30)))
+    orch.tick(NOW_UTC)
+
+    with conn.cursor() as cur:
+        cur.execute("SELECT qty FROM orders WHERE order_type = 'limit'")
+        row = cur.fetchone()
+    assert row is not None
+    assert row[0] == 2
+
+
+def test_signal_rejected_when_contract_exceeds_spend_cap(conn: psycopg.Connection) -> None:
+    """Contract costs $255 but cap is $200 → too_expensive, no order submitted."""
+    alpaca = FakeAlpacaClient()
+    store = _StubConfigStore(_snapshot(max_position_spend_usd=Decimal("200.00")))
+    orch, _, _ = _orch(
+        conn=conn, alpaca=alpaca, anthropic_responses=[VALID_PARSE_JSON],
+        config_store=store,
+    )
+    orch._post_queue.put(_stream_event(posted_at=NOW_UTC - timedelta(seconds=30)))
+    orch.tick(NOW_UTC)
+
+    with conn.cursor() as cur:
+        cur.execute("SELECT count(*) FROM orders")
+        assert cur.fetchone()[0] == 0
+        cur.execute("SELECT message FROM events WHERE category = 'strategy'")
+        rows = [r[0] for r in cur.fetchall()]
+    assert "too_expensive" in rows
+
+
+def test_disable_x_stream_drops_incoming_posts(conn: psycopg.Connection) -> None:
+    """When the dashboard pauses entries, posts never get parsed or journaled."""
+    alpaca = FakeAlpacaClient()
+    store = _StubConfigStore(_snapshot(disable_x_stream=True))
+    orch, _, _ = _orch(
+        conn=conn, alpaca=alpaca, anthropic_responses=[VALID_PARSE_JSON],
+        config_store=store,
+    )
+    orch._post_queue.put(_stream_event(posted_at=NOW_UTC - timedelta(seconds=30)))
+    orch.tick(NOW_UTC)
+
+    with conn.cursor() as cur:
+        cur.execute("SELECT count(*) FROM x_posts")
+        assert cur.fetchone()[0] == 0
+        cur.execute("SELECT count(*) FROM orders")
+        assert cur.fetchone()[0] == 0
