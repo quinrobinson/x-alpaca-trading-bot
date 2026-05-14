@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { Link } from 'react-router-dom'
-import { fmtMoney, fmtPct, pnlColorClass } from '../../util'
+import { fmtMoney, fmtPct } from '../../util'
 import BrandMark from './BrandMark.jsx'
 
 /**
@@ -39,15 +39,12 @@ export default function Header({
     glow = 'rgba(34,197,94,0.20)'
   }
 
-  const totalPnl = performance?.stats?.total_pnl
-  const pnlNum = totalPnl != null ? Number(totalPnl) : null
-
   return (
     <header
       className="sticky top-0 z-10 bg-bg/90 backdrop-blur border-b border-border"
     >
       {/* Row 1 — identity + settings */}
-      <div className="px-4 lg:px-6 pt-4 pb-2 flex items-center gap-2.5">
+      <div className="px-4 lg:px-6 py-3 flex items-center gap-2.5">
         <BrandMark size={28} />
         <span
           className="font-display font-semibold text-fg tracking-tight truncate"
@@ -58,8 +55,8 @@ export default function Header({
         <SettingsButton />
       </div>
 
-      {/* Row 2 — live state */}
-      <div className="px-4 lg:px-6 pb-3.5 flex items-center gap-3">
+      {/* Row 2 — live state, separated by a hairline */}
+      <div className="px-4 lg:px-6 py-3 flex items-center gap-3 border-t border-border">
         <div className="flex items-center gap-2">
           <span
             className="inline-block w-2 h-2 rounded-full"
@@ -76,33 +73,25 @@ export default function Header({
           </span>
         </div>
 
-        <div className="ml-auto flex items-center gap-3 shrink-0">
-          {pnlNum !== null && (
-            <span className={`text-sm font-mono ${pnlColorClass(pnlNum)}`}>
-              {fmtMoney(pnlNum)}
-            </span>
-          )}
-
-          <button
-            onClick={() => setOpen((o) => !o)}
-            className="text-fg-dim hover:text-fg text-xs flex items-center gap-1 transition-colors"
-            aria-expanded={open}
-            aria-label="Toggle system status details"
+        <button
+          onClick={() => setOpen((o) => !o)}
+          className="ml-auto shrink-0 text-fg-dim hover:text-fg text-xs flex items-center gap-1 transition-colors"
+          aria-expanded={open}
+          aria-label="Toggle system status details"
+        >
+          <span
+            className="font-mono uppercase tracking-wider"
+            style={{ fontSize: 10, letterSpacing: '0.16em' }}
           >
-            <span
-              className="font-mono uppercase tracking-wider"
-              style={{ fontSize: 10, letterSpacing: '0.16em' }}
-            >
-              details
-            </span>
-            <svg
-              className={`w-3 h-3 transition-transform ${open ? 'rotate-180' : ''}`}
-              viewBox="0 0 12 12"
-            >
-              <path d="M3 4.5l3 3 3-3" stroke="currentColor" strokeWidth="1.5" fill="none" />
-            </svg>
-          </button>
-        </div>
+            details
+          </span>
+          <svg
+            className={`w-3 h-3 transition-transform ${open ? 'rotate-180' : ''}`}
+            viewBox="0 0 12 12"
+          >
+            <path d="M3 4.5l3 3 3-3" stroke="currentColor" strokeWidth="1.5" fill="none" />
+          </svg>
+        </button>
       </div>
 
       {open && (
