@@ -1,32 +1,43 @@
 import { useState } from 'react'
 import { fmtMoney, fmtPct, pnlColorClass } from '../../util'
+import EquityCurve from './EquityCurve.jsx'
 
 /**
- * One-line stats summary — APDF dark card with a collapsed tile grid
- * below the divider.
+ * Stats card — APDF dark. Always shows:
+ *   - the headline (win rate, trade count, P&L)
+ *   - a compact cumulative-P&L sparkline beneath it
+ * Click to expand the per-metric tile grid (avg win/loss, profit factor,
+ * wins/losses).
  */
 export default function StatsBar({ performance }) {
   const [open, setOpen] = useState(false)
   const stats = performance?.stats ?? {}
+  const trades = performance?.trades ?? []
   const totalPnl = stats.total_pnl != null ? Number(stats.total_pnl) : null
+  const tradeCount = stats.total_trades ?? 0
 
   return (
     <section className="card">
       <button
         onClick={() => setOpen((o) => !o)}
-        className="w-full flex items-center justify-between px-5 py-4 text-left"
+        className="w-full flex items-center justify-between px-5 pt-4 pb-2 text-left"
       >
-        <div className="flex items-center gap-3 text-sm min-w-0">
+        <div className="flex items-center gap-3 text-sm min-w-0 flex-wrap">
           <span className="mono-label" style={{ fontSize: 10 }}>Stats</span>
           <span className="text-fg font-medium">
-            Win rate {stats.win_rate != null ? `${(stats.win_rate * 100).toFixed(0)}%` : '—'}
+            {stats.win_rate != null ? `${(stats.win_rate * 100).toFixed(0)}% win` : '— win'}
           </span>
           <span className="text-fg-faint">·</span>
-          <span className="text-fg-muted">{stats.total_trades ?? 0} trades</span>
+          <span className="text-fg-muted">
+            {tradeCount} trade{tradeCount === 1 ? '' : 's'}
+          </span>
           {totalPnl !== null && (
             <>
               <span className="text-fg-faint">·</span>
-              <span className={`font-mono ${pnlColorClass(totalPnl)}`}>{fmtMoney(totalPnl)}</span>
+              <span className="mono-label" style={{ fontSize: 10 }}>P&L</span>
+              <span className={`font-mono ${pnlColorClass(totalPnl)}`}>
+                {fmtMoney(totalPnl)}
+              </span>
             </>
           )}
         </div>
@@ -37,6 +48,12 @@ export default function StatsBar({ performance }) {
           <path d="M3 4.5l3 3 3-3" stroke="currentColor" strokeWidth="1.5" fill="none" />
         </svg>
       </button>
+
+      {/* Always-visible sparkline of cumulative P&L. Decent visual weight
+          but compact enough to stay in the collapsed view. */}
+      <div className="px-5 pb-3">
+        <EquityCurve trades={trades} height={36} />
+      </div>
 
       {open && (
         <div className="px-5 pb-5 grid grid-cols-2 sm:grid-cols-4 gap-4 border-t border-border pt-4">

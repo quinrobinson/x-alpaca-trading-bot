@@ -1,5 +1,6 @@
-import { useMemo, useState } from 'react'
+import { useMemo, useState } from 'react'  // useMemo still used for `sorted`
 import { fmtMoney, fmtPct, fmtTime, pnlColorClass } from '../util'
+import EquityCurve from './v2/EquityCurve.jsx'
 
 /**
  * Legacy performance history panel (used in /details). APDF dark tokens.
@@ -24,8 +25,6 @@ export default function PerformanceHistory({ performance }) {
     return out
   }, [trades, sortKey, sortDir])
 
-  const equityPoints = useMemo(() => buildEquityCurve(trades), [trades])
-
   const toggleSort = (key) => {
     if (sortKey === key) setSortDir(d => (d === 'asc' ? 'desc' : 'asc'))
     else { setSortKey(key); setSortDir('desc') }
@@ -49,7 +48,7 @@ export default function PerformanceHistory({ performance }) {
 
       <div className="mb-5">
         <div className="mono-label mb-2" style={{ fontSize: 10 }}>Cumulative P&L</div>
-        <EquityCurve points={equityPoints} />
+        <EquityCurve trades={trades} height={60} />
       </div>
 
       <div className="overflow-x-auto">
@@ -126,46 +125,3 @@ function Th({ children, onClick, active, dir }) {
   )
 }
 
-function buildEquityCurve(trades) {
-  const sorted = [...trades].sort((a, b) =>
-    String(a.closed_at).localeCompare(String(b.closed_at)),
-  )
-  let running = 0
-  return sorted.map((t) => {
-    running += Number(t.gross_pnl) || 0
-    return { ts: t.closed_at, equity: running }
-  })
-}
-
-function EquityCurve({ points }) {
-  if (points.length < 2) {
-    return <div className="text-xs text-fg-dim italic">Need ≥ 2 trades for a curve.</div>
-  }
-  const w = 600, h = 60
-  const min = Math.min(...points.map(p => p.equity), 0)
-  const max = Math.max(...points.map(p => p.equity), 0)
-  const span = max - min || 1
-  const xStep = w / (points.length - 1)
-  const path = points
-    .map((p, i) => {
-      const x = i * xStep
-      const y = h - ((p.equity - min) / span) * h
-      return `${i === 0 ? 'M' : 'L'}${x.toFixed(1)},${y.toFixed(1)}`
-    })
-    .join(' ')
-  const lastPositive = points[points.length - 1].equity >= 0
-  const stroke = lastPositive ? 'var(--positive)' : 'var(--negative)'
-  return (
-    <svg viewBox={`0 0 ${w} ${h}`} className="w-full h-16">
-      <line
-        x1={0} x2={w}
-        y1={h - ((0 - min) / span) * h}
-        y2={h - ((0 - min) / span) * h}
-        stroke="var(--border)"
-        strokeWidth={1}
-        strokeDasharray="2,3"
-      />
-      <path d={path} stroke={stroke} fill="none" strokeWidth={1.5} />
-    </svg>
-  )
-}
