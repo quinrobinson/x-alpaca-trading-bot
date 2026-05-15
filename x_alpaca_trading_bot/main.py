@@ -131,6 +131,10 @@ class OrchestratorState:
     # is up but the orchestrator thread died. Stale (> 3× tick interval)
     # means the loop has stopped iterating.
     last_tick_at: datetime | None = None
+    # Last cached market-open flag (from Alpaca's get_clock at each tick).
+    # Surfaced via /healthz so the dashboard's Market label reflects
+    # reality instead of always showing "closed" (the JS default).
+    market_open: bool = False
     # Switches we've already broadcast/notified about this session. Used to
     # dedupe alerts when a switch keeps re-tripping every tick (e.g. the
     # connection switches that get stripped from active_switches each tick
@@ -962,6 +966,9 @@ class Orchestrator:
             self._state.last_alpaca_ok_at = now
         except Exception:  # noqa: BLE001
             logger.warning("get_clock failed; market_open=False")
+        # Cache the latest market-open flag so /healthz can surface it
+        # without making its own Alpaca call.
+        self._state.market_open = market_open
 
         # Connection switches (x_stream_disconnected, alpaca_disconnected)
         # must auto-clear when the heartbeats recover. risk_manager.evaluate

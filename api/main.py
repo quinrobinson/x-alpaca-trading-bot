@@ -175,6 +175,10 @@ def create_app(
                 if orchestrator is not None else []
             ),
             "x_stream_disabled": _x_stream_disabled(orchestrator),
+            "market_open": (
+                getattr(orchestrator._state, "market_open", False)
+                if orchestrator is not None else False
+            ),
             "last_tick_at": last_tick.isoformat() if last_tick is not None else None,
         }
         # When the orchestrator thread has died, return 503 so uptime
