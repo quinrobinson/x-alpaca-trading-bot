@@ -36,9 +36,11 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
 
+from datetime import datetime, timezone
+
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from api.routers import config as config_router
@@ -143,9 +145,27 @@ def create_app(
     app.state.data_service = data_service
 
     @app.get("/healthz", tags=["meta"])
-    def healthz() -> dict[str, Any]:
-        return {
-            "ok": True,
+    def healthz() -> JSONResponse:
+        last_tick = (
+            getattr(orchestrator._state, "last_tick_at", None)
+            if orchestrator is not None else None
+        )
+        # Orchestrator is considered alive iff a tick completed within the
+        # last 60 seconds. The loop runs every ~5s, so 60s = 12 missed ticks
+        # — generous enough to ride out a slow API call but tight enough to
+        # surface a zombie thread quickly.
+        now = datetime.now(timezone.utc)
+        orch_alive = (
+            last_tick is not None
+            and (now - last_tick).total_seconds() < 60
+        )
+        # When run_orchestrator=False (tests, future API-only modes), the
+        # liveness check doesn't apply — treat as healthy.
+        if orchestrator is None or not run_orchestrator:
+            orch_alive = True
+
+        body: dict[str, Any] = {
+            "ok": orch_alive,
             "ws_clients": ws_manager.client_count,
             "open_positions": (
                 len(orchestrator._open_positions) if orchestrator is not None else 0
@@ -155,7 +175,12 @@ def create_app(
                 if orchestrator is not None else []
             ),
             "x_stream_disabled": _x_stream_disabled(orchestrator),
+            "last_tick_at": last_tick.isoformat() if last_tick is not None else None,
         }
+        # When the orchestrator thread has died, return 503 so uptime
+        # monitors (and the dashboard's "running" pill) can react.
+        status = 200 if orch_alive else 503
+        return JSONResponse(content=body, status_code=status)
 
     app.include_router(positions_router.router)
     app.include_router(signals_router.router)

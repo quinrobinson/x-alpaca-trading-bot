@@ -126,6 +126,11 @@ class OrchestratorState:
     last_alpaca_ok_at: datetime | None = None
     active_switches: frozenset[str] = frozenset()
     consecutive_losses: int = 0
+    # Wall-clock at the end of the most recent successful tick. Surfaced
+    # via /healthz so operators can detect a "zombie" state where uvicorn
+    # is up but the orchestrator thread died. Stale (> 3× tick interval)
+    # means the loop has stopped iterating.
+    last_tick_at: datetime | None = None
     # Switches we've already broadcast/notified about this session. Used to
     # dedupe alerts when a switch keeps re-tripping every tick (e.g. the
     # connection switches that get stripped from active_switches each tick
@@ -241,34 +246,71 @@ class Orchestrator:
     # ---- The tick (testable) ------------------------------------------
 
     def tick(self, now: datetime) -> None:
-        """One iteration of the main loop. Tests drive this directly."""
+        """One iteration of the main loop. Tests drive this directly.
+
+        Every step here is wrapped so an exception in one position, one
+        snapshot, or one risk evaluation can't crash the loop and turn
+        the bot into a zombie API server. Failures log loudly and the
+        loop continues; the rest of the system keeps managing other
+        positions.
+        """
         if now.tzinfo is None:
             raise ValueError("now must be timezone-aware")
 
         # 1. Drain any X stream events that arrived since last tick.
-        self._drain_post_queue(now)
+        try:
+            self._drain_post_queue(now)
+        except Exception:  # noqa: BLE001
+            logger.exception("drain_post_queue failed; continuing")
 
         # 2. Mandatory 15:55 ET close — flatten everything if past.
-        if self._executor.is_at_or_past_close(now):
-            self._flatten_at_close(now)
-            return
+        try:
+            if self._executor.is_at_or_past_close(now):
+                self._flatten_at_close(now)
+                self._state.last_tick_at = now
+                return
+        except Exception:  # noqa: BLE001
+            logger.exception("close-time check failed; continuing")
 
         # 3. Advance every open position through strategy.evaluate.
+        #    A failure in one position must not poison the rest of the tick.
         for record in list(self._open_positions.values()):
-            self._advance_position(record, now)
+            try:
+                self._advance_position(record, now)
+            except Exception:  # noqa: BLE001
+                logger.exception(
+                    "advance_position failed for signal_id=%s; continuing",
+                    record.signal_id,
+                )
 
         # 4. Take any monitor snapshots that came due.
-        for tracked in self._scheduler.positions_due(now):
+        try:
+            due = list(self._scheduler.positions_due(now))
+        except Exception:  # noqa: BLE001
+            logger.exception("scheduler.positions_due failed; continuing")
+            due = []
+        for tracked in due:
             record = self._open_positions.get(tracked.ctx.signal_id)
             if record is None:
                 continue
-            self._take_monitor_snapshot(record, now)
-            self._scheduler.mark_snapshotted(tracked.ctx.signal_id, now)
+            try:
+                self._take_monitor_snapshot(record, now)
+                self._scheduler.mark_snapshotted(tracked.ctx.signal_id, now)
+            except Exception:  # noqa: BLE001
+                logger.exception(
+                    "monitor snapshot failed for signal_id=%s; continuing",
+                    tracked.ctx.signal_id,
+                )
 
         # 5. Risk pulse — log a single info-level event per tick so we
         #    have a heartbeat in the events table. Connection switches
         #    will trip here if the heartbeats grew stale.
-        self._risk_pulse(now)
+        try:
+            self._risk_pulse(now)
+        except Exception:  # noqa: BLE001
+            logger.exception("risk_pulse failed; continuing")
+
+        self._state.last_tick_at = now
 
     # ---- Reconciliation ----------------------------------------------
 
@@ -697,22 +739,46 @@ class Orchestrator:
         # If yes, replace the stop on Alpaca with a fresh one at new_stop.
         prior_stop_on_book = self._stop_price_on_book(record)
         if prior_stop_on_book is not None and new_stop > prior_stop_on_book:
-            new_stop_order = self._executor.modify_stop(
-                record.stop_order_id, record.contract_symbol, record.qty, new_stop,
-            )
-            record.stop_order_id = new_stop_order.alpaca_order_id
-            journal.insert_order(
-                self._conn, signal_id=record.signal_id,
-                alpaca_order_id=new_stop_order.alpaca_order_id,
-                submitted_at=new_stop_order.submitted_at,
-                symbol=new_stop_order.symbol, side=new_stop_order.side,
-                qty=new_stop_order.qty, order_type=new_stop_order.order_type,
-                limit_price=None, stop_price=new_stop_order.stop_price,
-                status=new_stop_order.status, raw=new_stop_order.raw,
-            )
-            self._broadcast("trade.stop_moved", {
-                "signal_id": record.signal_id, "new_stop": str(new_stop),
-            })
+            # Alpaca rejects stop orders priced at-or-above the market — they
+            # would fire immediately. Our quote.mid can briefly disagree with
+            # Alpaca's reference price (illiquid contracts, wide spreads,
+            # data-source skew), so before pushing the new stop, sanity-check
+            # against the same `current_price` the ratchet just used. If they
+            # contradict, skip THIS tick and retry next pass — the strategy's
+            # internal ratchet state stays at the higher level, so we'll
+            # catch up as soon as the prices line up.
+            if new_stop >= current_price:
+                logger.warning(
+                    "skipping stop modify for signal_id=%s: new_stop=%s >= current_price=%s",
+                    record.signal_id, new_stop, current_price,
+                )
+            else:
+                try:
+                    new_stop_order = self._executor.modify_stop(
+                        record.stop_order_id, record.contract_symbol, record.qty, new_stop,
+                    )
+                except Exception:  # noqa: BLE001
+                    # Belt-and-suspenders. modify_stop can fail for reasons
+                    # we can't predict (Alpaca outage, race condition with a
+                    # fill, etc.). Log and continue — the next tick retries.
+                    logger.exception(
+                        "modify_stop failed for signal_id=%s new_stop=%s; will retry",
+                        record.signal_id, new_stop,
+                    )
+                else:
+                    record.stop_order_id = new_stop_order.alpaca_order_id
+                    journal.insert_order(
+                        self._conn, signal_id=record.signal_id,
+                        alpaca_order_id=new_stop_order.alpaca_order_id,
+                        submitted_at=new_stop_order.submitted_at,
+                        symbol=new_stop_order.symbol, side=new_stop_order.side,
+                        qty=new_stop_order.qty, order_type=new_stop_order.order_type,
+                        limit_price=None, stop_price=new_stop_order.stop_price,
+                        status=new_stop_order.status, raw=new_stop_order.raw,
+                    )
+                    self._broadcast("trade.stop_moved", {
+                        "signal_id": record.signal_id, "new_stop": str(new_stop),
+                    })
 
         if eval_result.exit is None:
             return

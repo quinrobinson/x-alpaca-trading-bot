@@ -548,6 +548,34 @@ def test_notifier_called_on_trade_entered(conn: psycopg.Connection) -> None:
     assert call["entry_price"] == Decimal("2.55")
 
 
+def test_tick_survives_per_position_exception(conn: psycopg.Connection) -> None:
+    """A crash in one position's _advance_position must not kill the tick
+    or the rest of the loop. Before the fix, an Alpaca 422 (stop above
+    market) would propagate all the way out of run() and zombify the bot.
+    """
+    orch, _, _ = _orch(conn=conn, seed_heartbeats=True)
+    # Inject a fake position whose strategy_position is None — that will
+    # raise an AttributeError when _advance_position tries to read it.
+    class _Broken:
+        signal_id = 9999
+        ticker = "FAKE"
+        expiration = NOW_UTC.date()
+        option_type = "call"
+        strike = Decimal("100")
+
+        def __getattr__(self, _name):
+            raise RuntimeError("simulated downstream failure")
+
+    orch._open_positions[9999] = _Broken()  # type: ignore[assignment]
+
+    # tick() must NOT raise.
+    orch.tick(NOW_UTC)
+
+    # And it should have stamped last_tick_at — proving the loop reached
+    # the end despite the failure.
+    assert orch._state.last_tick_at == NOW_UTC
+
+
 def test_x_stream_disconnected_auto_clears_when_heartbeat_recovers(conn: psycopg.Connection) -> None:
     """Once x_stream_disconnected is in active_switches, a fresh heartbeat
     must clear it on the next risk pulse. Previously the switch persisted
