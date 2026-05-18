@@ -548,6 +548,69 @@ def test_notifier_called_on_trade_entered(conn: psycopg.Connection) -> None:
     assert call["entry_price"] == Decimal("2.55")
 
 
+def test_advance_position_detects_filled_stop_and_records_trade(conn: psycopg.Connection) -> None:
+    """If Alpaca's stop order has already filled, the bot must record a
+    trade and unregister the position rather than continuing to manage a
+    ghost. Without this check, `_open_positions` accumulates stale entries
+    that never clean up."""
+    alpaca = FakeAlpacaClient()
+    alpaca.next_fill = Decimal("2.55")  # entry fills immediately
+    orch, _, _ = _orch(conn=conn, alpaca=alpaca, anthropic_responses=[VALID_PARSE_JSON])
+
+    # Open a position via the normal entry flow so all the records exist.
+    orch._post_queue.put(_stream_event(posted_at=NOW_UTC - timedelta(seconds=30)))
+    orch.tick(NOW_UTC)
+    assert len(orch._open_positions) == 1
+    signal_id, record = next(iter(orch._open_positions.items()))
+
+    # Now simulate Alpaca's stop filling at 2.00 (a stop-loss exit).
+    stop_blob = alpaca.orders_by_id[record.stop_order_id]
+    stop_blob.status = "filled"
+    stop_blob.filled_avg_price = 2.00
+    stop_blob.filled_at = NOW_UTC + timedelta(minutes=5)
+
+    # Next tick should detect the filled stop and clean up.
+    orch.tick(NOW_UTC + timedelta(minutes=5, seconds=10))
+
+    assert len(orch._open_positions) == 0
+    with conn.cursor() as cur:
+        cur.execute("SELECT exit_reason, exit_price FROM trades WHERE signal_id = %s", (signal_id,))
+        row = cur.fetchone()
+    assert row is not None
+    assert row[0] == "stop_loss"
+    assert Decimal(row[1]) == Decimal("2.0000")
+
+
+def test_reconcile_clears_ghost_positions(conn: psycopg.Connection) -> None:
+    """Belt-and-suspenders: even if the per-tick stop check misses (e.g.
+    the stop order was canceled and the close happened via a market sell
+    we didn't initiate), the periodic full-position reconciliation should
+    catch the divergence within ~30 seconds."""
+    alpaca = FakeAlpacaClient()
+    alpaca.next_fill = Decimal("2.55")
+    orch, _, _ = _orch(conn=conn, alpaca=alpaca, anthropic_responses=[VALID_PARSE_JSON])
+    orch._post_queue.put(_stream_event(posted_at=NOW_UTC - timedelta(seconds=30)))
+    orch.tick(NOW_UTC)
+    assert len(orch._open_positions) == 1
+    signal_id, record = next(iter(orch._open_positions.items()))
+
+    # Simulate the position vanishing from Alpaca with no stop fill record
+    # (e.g. a manual close via Alpaca's UI). FakeAlpacaClient.positions is
+    # already empty, so we just need to drive enough ticks to fire the
+    # periodic reconcile (every 6 ticks).
+    for i in range(1, 7):
+        orch.tick(NOW_UTC + timedelta(seconds=i * 5))
+
+    # Ghost should be cleared.
+    assert signal_id not in orch._open_positions
+    with conn.cursor() as cur:
+        cur.execute("SELECT exit_reason FROM trades WHERE signal_id = %s", (signal_id,))
+        row = cur.fetchone()
+    assert row is not None
+    # No fill data to recover → falls back to "external_close" at entry price.
+    assert row[0] == "external_close"
+
+
 def test_tick_survives_per_position_exception(conn: psycopg.Connection) -> None:
     """A crash in one position's _advance_position must not kill the tick
     or the rest of the loop. Before the fix, an Alpaca 422 (stop above

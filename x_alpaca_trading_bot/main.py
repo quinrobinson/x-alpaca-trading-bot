@@ -80,6 +80,30 @@ TOO_EXPENSIVE_REASON = "too_expensive"
 # are sticky and persist across calls.
 _CONNECTION_SWITCHES = frozenset({"x_stream_disconnected", "alpaca_disconnected"})
 
+# Run the full position reconciliation (compare in-memory _open_positions
+# against Alpaca's actual position list) every N ticks. At a 5-second
+# tick interval, every 6 ticks = ~30s — generous enough to ride out a
+# transient Alpaca API hiccup, tight enough to catch a stop-fired close
+# before the bot does too many wasted advance-position passes.
+_RECONCILE_EVERY_N_TICKS = 6
+
+
+def _order_is_filled(order: Any | None) -> bool:
+    """True iff an Alpaca order has fully filled.
+
+    The fast path uses the order's `filled_avg_price` + `filled_at` —
+    both populate when the order completes. We use these rather than
+    the status string because alpaca-py occasionally returns enum
+    values that look like 'OrderStatus.FILLED' instead of the bare
+    'filled', and the price/at fields are stable across API versions.
+    """
+    if order is None:
+        return False
+    return (
+        getattr(order, "filled_avg_price", None) is not None
+        and getattr(order, "filled_at", None) is not None
+    )
+
 
 def _compute_qty(live_ask: Decimal, rcfg: BotConfig) -> int:
     """Derive contract qty from the operator's spend cap.
@@ -135,6 +159,9 @@ class OrchestratorState:
     # Surfaced via /healthz so the dashboard's Market label reflects
     # reality instead of always showing "closed" (the JS default).
     market_open: bool = False
+    # Monotonic tick counter — used to throttle expensive reconciliation
+    # checks (full Alpaca position diff) to every Nth tick.
+    tick_count: int = 0
     # Switches we've already broadcast/notified about this session. Used to
     # dedupe alerts when a switch keeps re-tripping every tick (e.g. the
     # connection switches that get stripped from active_switches each tick
@@ -313,6 +340,17 @@ class Orchestrator:
             self._risk_pulse(now)
         except Exception:  # noqa: BLE001
             logger.exception("risk_pulse failed; continuing")
+
+        # 6. Periodic position reconciliation — catches positions that
+        #    closed on Alpaca's side via paths the bot didn't initiate
+        #    (manual close, account-level liquidation, race conditions
+        #    where the per-tick stop-order check missed it).
+        self._state.tick_count += 1
+        if self._state.tick_count % _RECONCILE_EVERY_N_TICKS == 0:
+            try:
+                self._reconcile_positions(now)
+            except Exception:  # noqa: BLE001
+                logger.exception("reconcile_positions failed; continuing")
 
         self._state.last_tick_at = now
 
@@ -709,6 +747,23 @@ class Orchestrator:
 
     def _advance_position(self, record: PositionRecord, now: datetime) -> None:
         """One tick of position management: fetch price, ratchet, maybe exit."""
+        # Fast path: if Alpaca's stop order has already filled, the position
+        # is gone server-side. Record the close, unregister, bail out before
+        # we waste a quote call or try to modify a dead order. Without this,
+        # _open_positions accumulates "ghost" positions that stay forever
+        # because nothing else in the loop notices the Alpaca-side exit.
+        if record.stop_order_id is not None:
+            stop_order = None
+            try:
+                stop_order = self._executor.get_order(record.stop_order_id)
+            except Exception:  # noqa: BLE001
+                # Order might be 404 (replaced/canceled). Fall through to
+                # the periodic reconciliation in tick() to catch that case.
+                logger.debug("get_order failed for stop_order_id=%s", record.stop_order_id)
+            if _order_is_filled(stop_order):
+                self._handle_alpaca_filled_stop(record, stop_order, now)
+                return
+
         quote = self._ds.get_option_quote(
             record.ticker, record.expiration, record.option_type, record.strike,
         )
@@ -870,6 +925,156 @@ class Orchestrator:
                 pnl_pct=pnl_pct,
                 exit_reason=exit_decision.reason,
                 hold_minutes=hold_minutes,
+            )
+
+    # ---- Reconciliation: detect Alpaca-side closes -------------------
+
+    def _handle_alpaca_filled_stop(
+        self,
+        record: PositionRecord,
+        stop_order: Any,
+        now: datetime,
+    ) -> None:
+        """The stop on Alpaca has already filled. Record the trade and
+        unregister the position — we are NOT submitting another sell
+        (it would open a short)."""
+        exit_price = Decimal(str(stop_order.filled_avg_price))
+        closed_at = stop_order.filled_at or now
+        self._record_external_close(
+            record, exit_price=exit_price, closed_at=closed_at,
+            exit_reason="stop_loss", now=now,
+        )
+
+    def _record_external_close(
+        self,
+        record: PositionRecord,
+        *,
+        exit_price: Decimal,
+        closed_at: datetime,
+        exit_reason: str,
+        now: datetime,
+    ) -> None:
+        """Common path for any close that happened on Alpaca without going
+        through `_close_position`. Writes the trades row, fires the
+        broadcast, fires the Telegram alert, and unregisters from
+        in-memory state. Idempotent enough — if the trade row already
+        exists for this signal_id, journal.insert_trade will raise and
+        we'll bail out cleanly without duplicating."""
+        try:
+            ctx = SnapshotContext(
+                signal_id=record.signal_id,
+                contract_symbol=record.contract_symbol,
+                underlying_ticker=record.ticker,
+            )
+            close_trade(
+                self._conn, self._ds,
+                ctx=ctx, scheduler=self._scheduler,
+                opened_at=record.opened_at, closed_at=closed_at,
+                option_type=record.option_type, strike=record.strike,
+                expiration=record.expiration,
+                entry_price=record.entry_price, exit_price=exit_price,
+                qty=record.qty, exit_reason=exit_reason,
+            )
+        except Exception:  # noqa: BLE001
+            logger.exception(
+                "close_trade failed for signal_id=%s; continuing cleanup",
+                record.signal_id,
+            )
+
+        with self._lock:
+            self._open_positions.pop(record.signal_id, None)
+
+        self._broadcast("trade.exited", {
+            "signal_id": record.signal_id, "exit_price": str(exit_price),
+            "reason": exit_reason,
+        })
+
+        if self._notifier is not None:
+            try:
+                pnl = (exit_price - record.entry_price) * Decimal(record.qty)
+                pnl_pct = (
+                    (exit_price - record.entry_price) / record.entry_price
+                    if record.entry_price > 0 else Decimal(0)
+                )
+                hold_minutes = int((closed_at - record.opened_at).total_seconds() // 60)
+                self._notifier.notify_trade_closed(
+                    ticker=record.ticker,
+                    option_type=record.option_type,
+                    strike=record.strike,
+                    expiration=record.expiration,
+                    qty=record.qty,
+                    entry_price=record.entry_price,
+                    exit_price=exit_price,
+                    pnl=pnl,
+                    pnl_pct=pnl_pct,
+                    exit_reason=exit_reason,
+                    hold_minutes=hold_minutes,
+                )
+            except Exception:  # noqa: BLE001
+                logger.exception("notifier failed for signal_id=%s", record.signal_id)
+
+        logger.info(
+            "external close detected for signal_id=%s reason=%s exit=%s",
+            record.signal_id, exit_reason, exit_price,
+        )
+
+    def _reconcile_positions(self, now: datetime) -> None:
+        """Compare in-memory _open_positions against Alpaca's actual position
+        list. Anything in memory that Alpaca no longer has is a "ghost" —
+        the stop fired or the position was closed externally. Record the
+        trade and unregister.
+
+        Cheap-ish: one get_all_positions call. Throttled by tick_count to
+        run every _RECONCILE_EVERY_N_TICKS ticks. Skips quietly on any
+        Alpaca API failure (the next pass will retry).
+        """
+        if not self._open_positions:
+            return
+
+        try:
+            alpaca_positions = self._executor._client.get_all_positions()
+        except Exception:  # noqa: BLE001
+            logger.exception("get_all_positions failed during reconciliation")
+            return
+
+        alpaca_symbols = {p.symbol for p in alpaca_positions}
+        ghosts = [
+            (sig_id, rec)
+            for sig_id, rec in list(self._open_positions.items())
+            if rec.contract_symbol not in alpaca_symbols
+        ]
+        if not ghosts:
+            return
+
+        for signal_id, record in ghosts:
+            # Try to find the actual close fill for accurate exit data.
+            exit_price = record.entry_price  # fallback
+            closed_at = now
+            exit_reason = "external_close"
+            try:
+                stop_order = (
+                    self._executor.get_order(record.stop_order_id)
+                    if record.stop_order_id is not None else None
+                )
+            except Exception:  # noqa: BLE001
+                stop_order = None
+            if _order_is_filled(stop_order):
+                exit_price = Decimal(str(stop_order.filled_avg_price))
+                closed_at = stop_order.filled_at or now
+                exit_reason = "stop_loss"
+            else:
+                logger.warning(
+                    "ghost position detected with no fillable stop order: signal_id=%s symbol=%s; "
+                    "recording close at entry price",
+                    signal_id, record.contract_symbol,
+                )
+
+            self._record_external_close(
+                record,
+                exit_price=exit_price,
+                closed_at=closed_at,
+                exit_reason=exit_reason,
+                now=now,
             )
 
     # ---- Monitor snapshots -------------------------------------------
