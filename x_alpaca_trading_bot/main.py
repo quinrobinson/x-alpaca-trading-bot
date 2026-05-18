@@ -88,6 +88,30 @@ _CONNECTION_SWITCHES = frozenset({"x_stream_disconnected", "alpaca_disconnected"
 _RECONCILE_EVERY_N_TICKS = 6
 
 
+def _stream_listener_alive(listener: Any | None) -> bool:
+    """True iff tweepy's background stream thread is currently running.
+
+    Tweepy's StreamingClient exposes a `running` property that returns
+    `self.thread is not None and self.thread.is_alive()`. We use this
+    as the authoritative "stream is up" signal rather than depending on
+    on_keep_alive callbacks, which can be silent for 60+ seconds even
+    on healthy filtered streams.
+    """
+    if listener is None:
+        return False
+    # tweepy exposes .running; if a future version changes the attr,
+    # fall back to inspecting the thread directly. Both checks are
+    # defensive — we never want this helper to crash a risk evaluation.
+    try:
+        running = getattr(listener, "running", None)
+        if isinstance(running, bool):
+            return running
+        thread = getattr(listener, "thread", None)
+        return bool(thread is not None and thread.is_alive())
+    except Exception:  # noqa: BLE001
+        return False
+
+
 def _order_is_filled(order: Any | None) -> bool:
     """True iff an Alpaca order has fully filled.
 
@@ -1188,6 +1212,15 @@ class Orchestrator:
         if self._runtime_config().disable_x_stream:
             # Operator pause: keep the heartbeat fresh so the switch
             # doesn't re-trip in risk_manager.evaluate this call.
+            last_x = now
+        elif _stream_listener_alive(self._stream_listener):
+            # Authoritative liveness signal: tweepy's background thread
+            # is alive. On low-volume target accounts the on_keep_alive
+            # callback can go silent for 60+ seconds even when the
+            # connection is perfectly healthy, which was repeatedly
+            # tripping x_stream_disconnected. Trusting the thread state
+            # is more honest — if the thread dies (real disconnect),
+            # this falls through and the kill switch trips correctly.
             last_x = now
         if active != self._state.active_switches:
             self._state = replace(self._state, active_switches=active)

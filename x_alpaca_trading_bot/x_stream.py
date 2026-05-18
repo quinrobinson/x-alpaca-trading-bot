@@ -105,15 +105,18 @@ class XStreamListener(tweepy.StreamingClient):
     def on_keep_alive(self) -> None:  # type: ignore[override]
         # X sends a keep-alive (a single "\r\n") every ~20 seconds during
         # quiet periods so clients know the TCP stream is still healthy.
-        # Tweepy surfaces it via this hook — perfect for refreshing the
-        # kill-switch heartbeat between tweets without depending on the
-        # target account's posting cadence.
+        # Tweepy surfaces it via this hook — but in practice we've seen
+        # filtered streams go 60+ seconds between any callbacks. The
+        # orchestrator's tick-level "is the listener thread alive?"
+        # check is the real safety net; this remains as a faster signal
+        # when keep-alives DO arrive.
         logger.debug("x_stream keep-alive received")
-        if self._on_keep_alive_cb is not None:
-            try:
-                self._on_keep_alive_cb()
-            except Exception:  # noqa: BLE001
-                logger.exception("on_keep_alive callback raised; continuing stream")
+        if self._on_keep_alive_cb is None:
+            return
+        try:
+            self._on_keep_alive_cb()
+        except Exception:  # noqa: BLE001 — never let a callback kill the stream
+            logger.exception("keep-alive callback raised; continuing stream")
 
     def on_disconnect(self) -> None:  # type: ignore[override]
         logger.warning("X stream disconnected")

@@ -639,6 +639,43 @@ def test_tick_survives_per_position_exception(conn: psycopg.Connection) -> None:
     assert orch._state.last_tick_at == NOW_UTC
 
 
+def test_listener_thread_alive_keeps_heartbeat_fresh(conn: psycopg.Connection) -> None:
+    """When tweepy's listener thread is alive, the orchestrator must
+    treat the X stream as healthy regardless of whether on_keep_alive
+    has fired recently. This is the fix for the recurring
+    x_stream_disconnected trips on low-volume target accounts."""
+    orch, _, _ = _orch(conn=conn, seed_heartbeats=False)
+    # Simulate a stale heartbeat — last tweet was 5 minutes ago.
+    orch._state.last_x_received_at = NOW_UTC - timedelta(minutes=5)
+
+    # Inject a fake listener whose `running` property returns True.
+    class _AliveListener:
+        running = True
+
+    orch._stream_listener = _AliveListener()
+
+    state = orch._build_session_state(NOW_UTC)
+    # The heartbeat handed to risk_manager.evaluate should be fresh
+    # (==NOW_UTC), not the 5-minute-old original.
+    assert state.last_x_received_at == NOW_UTC
+
+
+def test_listener_thread_dead_lets_kill_switch_trip(conn: psycopg.Connection) -> None:
+    """If the listener thread is dead (genuine disconnect), DON'T paper
+    over it — let the heartbeat go stale so the kill switch trips."""
+    orch, _, _ = _orch(conn=conn, seed_heartbeats=False)
+    orch._state.last_x_received_at = NOW_UTC - timedelta(minutes=5)
+
+    class _DeadListener:
+        running = False
+
+    orch._stream_listener = _DeadListener()
+
+    state = orch._build_session_state(NOW_UTC)
+    # Heartbeat is the original stale value, not auto-bumped.
+    assert state.last_x_received_at == NOW_UTC - timedelta(minutes=5)
+
+
 def test_x_stream_disconnected_auto_clears_when_heartbeat_recovers(conn: psycopg.Connection) -> None:
     """Once x_stream_disconnected is in active_switches, a fresh heartbeat
     must clear it on the next risk pulse. Previously the switch persisted
