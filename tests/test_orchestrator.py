@@ -25,7 +25,7 @@ import psycopg
 import pytest
 from dotenv import load_dotenv
 
-from x_alpaca_trading_bot import db
+from x_alpaca_trading_bot import db, journal
 from x_alpaca_trading_bot.config import Config, PAPER_BASE_URL
 from x_alpaca_trading_bot.data_service import (
     Greeks,
@@ -579,6 +579,57 @@ def test_advance_position_detects_filled_stop_and_records_trade(conn: psycopg.Co
     assert row is not None
     assert row[0] == "stop_loss"
     assert Decimal(row[1]) == Decimal("2.0000")
+
+
+def test_reconcile_does_not_duplicate_existing_trade(conn: psycopg.Connection) -> None:
+    """If _close_position already wrote a trade but failed to pop the
+    position from _open_positions (exactly the bug we saw with CTSH/MA),
+    the periodic reconciliation must clean up state WITHOUT writing a
+    second trade row for the same signal_id."""
+    alpaca = FakeAlpacaClient()
+    alpaca.next_fill = Decimal("2.55")
+    orch, _, broadcasts = _orch(
+        conn=conn, alpaca=alpaca, anthropic_responses=[VALID_PARSE_JSON],
+    )
+    orch._post_queue.put(_stream_event(posted_at=NOW_UTC - timedelta(seconds=30)))
+    orch.tick(NOW_UTC)
+    signal_id, record = next(iter(orch._open_positions.items()))
+
+    # Simulate _close_position having written the trade but never popping.
+    journal.insert_trade(
+        conn,
+        signal_id=signal_id,
+        opened_at=record.opened_at,
+        closed_at=NOW_UTC + timedelta(minutes=10),
+        ticker=record.ticker,
+        option_type=record.option_type,
+        strike=record.strike,
+        expiration=record.expiration,
+        entry_price=record.entry_price,
+        exit_price=record.entry_price,
+        qty=record.qty,
+        exit_reason="stop_loss",
+    )
+    pre_count = _count_trades(conn, signal_id)
+    pre_broadcast_count = sum(1 for e, _ in broadcasts if e == "trade.exited")
+
+    # Drive enough ticks to fire reconciliation (Alpaca already has no
+    # position for this contract — FakeAlpacaClient.positions is empty).
+    for i in range(1, 7):
+        orch.tick(NOW_UTC + timedelta(minutes=10, seconds=i * 5))
+
+    # Position is gone from in-memory state, trade NOT duplicated, no
+    # second WS broadcast for the same close.
+    assert signal_id not in orch._open_positions
+    assert _count_trades(conn, signal_id) == pre_count
+    post_broadcast_count = sum(1 for e, _ in broadcasts if e == "trade.exited")
+    assert post_broadcast_count == pre_broadcast_count
+
+
+def _count_trades(conn: psycopg.Connection, signal_id: int) -> int:
+    with conn.cursor() as cur:
+        cur.execute("SELECT COUNT(*) FROM trades WHERE signal_id = %s", (signal_id,))
+        return int(cur.fetchone()[0])
 
 
 def test_reconcile_clears_ghost_positions(conn: psycopg.Connection) -> None:

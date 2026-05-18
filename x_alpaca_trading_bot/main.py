@@ -981,32 +981,69 @@ class Orchestrator:
         """Common path for any close that happened on Alpaca without going
         through `_close_position`. Writes the trades row, fires the
         broadcast, fires the Telegram alert, and unregisters from
-        in-memory state. Idempotent enough — if the trade row already
-        exists for this signal_id, journal.insert_trade will raise and
-        we'll bail out cleanly without duplicating."""
+        in-memory state.
+
+        Idempotent: if a trade row already exists for this signal_id
+        (e.g. _close_position recorded it but failed to pop the position),
+        we skip the close_trade call so the reconciliation pass can't
+        create duplicates. We still clean up in-memory state.
+        """
+        already_recorded = False
         try:
-            ctx = SnapshotContext(
-                signal_id=record.signal_id,
-                contract_symbol=record.contract_symbol,
-                underlying_ticker=record.ticker,
-            )
-            close_trade(
-                self._conn, self._ds,
-                ctx=ctx, scheduler=self._scheduler,
-                opened_at=record.opened_at, closed_at=closed_at,
-                option_type=record.option_type, strike=record.strike,
-                expiration=record.expiration,
-                entry_price=record.entry_price, exit_price=exit_price,
-                qty=record.qty, exit_reason=exit_reason,
-            )
+            with self._conn.cursor() as cur:
+                cur.execute(
+                    "SELECT 1 FROM trades WHERE signal_id = %s",
+                    (record.signal_id,),
+                )
+                already_recorded = cur.fetchone() is not None
         except Exception:  # noqa: BLE001
             logger.exception(
-                "close_trade failed for signal_id=%s; continuing cleanup",
+                "trade-existence check failed for signal_id=%s; "
+                "proceeding cautiously (skipping close_trade)",
                 record.signal_id,
             )
+            already_recorded = True  # err on the side of "don't duplicate"
+
+        if already_recorded:
+            logger.info(
+                "trade row already exists for signal_id=%s; cleaning up state only",
+                record.signal_id,
+            )
+        else:
+            try:
+                ctx = SnapshotContext(
+                    signal_id=record.signal_id,
+                    contract_symbol=record.contract_symbol,
+                    underlying_ticker=record.ticker,
+                )
+                close_trade(
+                    self._conn, self._ds,
+                    ctx=ctx, scheduler=self._scheduler,
+                    opened_at=record.opened_at, closed_at=closed_at,
+                    option_type=record.option_type, strike=record.strike,
+                    expiration=record.expiration,
+                    entry_price=record.entry_price, exit_price=exit_price,
+                    qty=record.qty, exit_reason=exit_reason,
+                )
+            except Exception:  # noqa: BLE001
+                logger.exception(
+                    "close_trade failed for signal_id=%s; continuing cleanup",
+                    record.signal_id,
+                )
 
         with self._lock:
             self._open_positions.pop(record.signal_id, None)
+
+        # Skip broadcast/telegram if the trade was already recorded —
+        # _close_position would have fired those at the time. Otherwise
+        # we'd send a second WS event and a second Telegram alert for the
+        # same close.
+        if already_recorded:
+            logger.info(
+                "external close cleanup complete for signal_id=%s (no re-notify)",
+                record.signal_id,
+            )
+            return
 
         self._broadcast("trade.exited", {
             "signal_id": record.signal_id, "exit_price": str(exit_price),
