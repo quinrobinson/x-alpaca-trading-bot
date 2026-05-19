@@ -54,18 +54,22 @@ def test_stop_loss_trade_exits_at_minus_20(tmp_path: Path) -> None:
 
 
 def test_ratchet_trade_locks_in_profit(tmp_path: Path) -> None:
-    """Ride to +50%, then pull back to +25% — stop ratcheted to +30%, exit at stop."""
+    """Ride to +60%, then pull back below the +30% ratchet stop — exit locks in profit.
+
+    New ratchet table (May 2026): triggers are +20/+30/+40/+60. Stops move
+    to breakeven / +10% / +20% / +30% respectively.
+    """
     csv_path = tmp_path / "ratchet.csv"
     entry = Decimal("2.00")
     expiry = date(2026, 6, 20)
     t0 = datetime(2026, 5, 12, 13, 30, tzinfo=timezone.utc)
     _write_csv(csv_path, [
         _row("t1", entry, expiry, t0, entry),
-        _row("t1", entry, expiry, t0 + timedelta(minutes=5), Decimal("2.20")),   # +10% level 1
-        _row("t1", entry, expiry, t0 + timedelta(minutes=10), Decimal("2.40")),  # +20% level 2
-        _row("t1", entry, expiry, t0 + timedelta(minutes=15), Decimal("2.50")),  # +25% level 3
-        _row("t1", entry, expiry, t0 + timedelta(minutes=20), Decimal("3.00")),  # +50% level 4
-        _row("t1", entry, expiry, t0 + timedelta(minutes=25), Decimal("2.50")),  # +25% but stop at +30%
+        _row("t1", entry, expiry, t0 + timedelta(minutes=5), Decimal("2.40")),   # +20% level 1
+        _row("t1", entry, expiry, t0 + timedelta(minutes=10), Decimal("2.60")),  # +30% level 2
+        _row("t1", entry, expiry, t0 + timedelta(minutes=15), Decimal("2.80")),  # +40% level 3
+        _row("t1", entry, expiry, t0 + timedelta(minutes=20), Decimal("3.20")),  # +60% level 4
+        _row("t1", entry, expiry, t0 + timedelta(minutes=25), Decimal("2.50")),  # below stop ($2.60)
     ])
 
     results = bts.run_backtest(csv_path, stop_pct=Decimal("0.20"))

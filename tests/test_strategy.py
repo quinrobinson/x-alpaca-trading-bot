@@ -119,42 +119,51 @@ def test_no_exit_above_initial_stop() -> None:
 
 # ---- Ratchet ratchet ratchet ---------------------------------------------
 
-def test_ratchet_level_1_at_plus_10_moves_stop_to_breakeven() -> None:
+def test_ratchet_level_1_at_plus_20_moves_stop_to_breakeven() -> None:
     p = _new_position(entry=Decimal("2.50"))
-    result = evaluate(p, Decimal("2.75"), NOW)  # +10%
+    result = evaluate(p, Decimal("3.00"), NOW)  # +20%
     assert result.exit is None
     assert result.position.ratchet_level == 1
     assert result.position.stop_price == Decimal("2.50")  # breakeven
 
 
-def test_ratchet_level_2_at_plus_20_moves_stop_to_plus_10() -> None:
+def test_ratchet_level_2_at_plus_30_moves_stop_to_plus_10() -> None:
     p = _new_position(entry=Decimal("2.50"))
-    result = evaluate(p, Decimal("3.00"), NOW)  # +20%
+    result = evaluate(p, Decimal("3.25"), NOW)  # +30%
     assert result.exit is None
     assert result.position.ratchet_level == 2
     assert result.position.stop_price == Decimal("2.75")  # entry * 1.10
 
 
-def test_ratchet_level_3_at_plus_25_moves_stop_to_plus_20() -> None:
+def test_ratchet_level_3_at_plus_40_moves_stop_to_plus_20() -> None:
     p = _new_position(entry=Decimal("2.50"))
-    result = evaluate(p, Decimal("3.125"), NOW)  # +25%
+    result = evaluate(p, Decimal("3.50"), NOW)  # +40%
     assert result.exit is None
     assert result.position.ratchet_level == 3
     assert result.position.stop_price == Decimal("3.00")  # entry * 1.20
 
 
-def test_ratchet_level_4_at_plus_40_moves_stop_to_plus_30() -> None:
+def test_ratchet_level_4_at_plus_60_moves_stop_to_plus_30() -> None:
     p = _new_position(entry=Decimal("2.50"))
-    result = evaluate(p, Decimal("3.50"), NOW)  # +40%
+    result = evaluate(p, Decimal("4.00"), NOW)  # +60%
     assert result.exit is None
     assert result.position.ratchet_level == 4
     assert result.position.stop_price == Decimal("3.25")  # entry * 1.30
 
 
-def test_ratchet_skips_intermediate_levels_on_big_jump() -> None:
-    """One tick from entry directly to +50% — must land at level 4."""
+def test_ratchet_below_first_trigger_does_not_move_stop() -> None:
+    """The first trigger is +20% now (was +10%). A +15% move shouldn't ratchet."""
     p = _new_position(entry=Decimal("2.50"))
-    result = evaluate(p, Decimal("3.75"), NOW)  # +50%, past +40%
+    result = evaluate(p, Decimal("2.875"), NOW)  # +15%
+    assert result.exit is None
+    assert result.position.ratchet_level == 0  # no ratchet yet
+    assert result.position.stop_price == Decimal("2.00")  # initial stop unchanged
+
+
+def test_ratchet_skips_intermediate_levels_on_big_jump() -> None:
+    """One tick from entry directly to +70% — must land at level 4."""
+    p = _new_position(entry=Decimal("2.50"))
+    result = evaluate(p, Decimal("4.25"), NOW)  # +70%, past +60%
     assert result.exit is None
     assert result.position.ratchet_level == 4
     assert result.position.stop_price == Decimal("3.25")
@@ -163,8 +172,8 @@ def test_ratchet_skips_intermediate_levels_on_big_jump() -> None:
 def test_stop_never_moves_down_after_pullback() -> None:
     """Once ratcheted up, the stop stays high even if price pulls back."""
     p = _new_position(entry=Decimal("2.50"))
-    # First tick: +25%, stop ratchets to +20% (=$3.00)
-    after_high = evaluate(p, Decimal("3.125"), NOW).position
+    # First tick: +40%, stop ratchets to +20% (=$3.00)
+    after_high = evaluate(p, Decimal("3.50"), NOW).position
     assert after_high.stop_price == Decimal("3.00")
     assert after_high.ratchet_level == 3
 
@@ -180,12 +189,12 @@ def test_stop_never_moves_down_after_pullback() -> None:
 def test_ratchet_does_not_downgrade_existing_state() -> None:
     """Re-evaluating at a level we've already crossed shouldn't change state."""
     p = _new_position(entry=Decimal("2.50"))
-    after_4 = evaluate(p, Decimal("3.50"), NOW).position
+    after_4 = evaluate(p, Decimal("4.00"), NOW).position  # +60% lands at level 4
     assert after_4.ratchet_level == 4
 
-    # Price drops to +20% — ratchet shouldn't go DOWN to level 2.
-    result = evaluate(after_4, Decimal("3.00"), NOW + timedelta(minutes=1))
-    # Position would stop out (current $3.00 < stop $3.25), but the state
+    # Price drops to +30% — ratchet shouldn't go DOWN to level 2.
+    result = evaluate(after_4, Decimal("3.25"), NOW + timedelta(minutes=1))
+    # Position would stop out (current $3.25 ≈ stop $3.25), but the state
     # update happens BEFORE the stop check, so ratchet_level remains 4.
     assert result.position.ratchet_level == 4
     assert result.position.stop_price == Decimal("3.25")

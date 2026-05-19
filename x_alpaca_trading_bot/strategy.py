@@ -11,17 +11,25 @@ Design constraints from X_ALPACA_OPTIONS_HANDOFF.md §2.3 and §6:
   - All money math uses `Decimal`. Never float.
   - Timezone-aware datetimes everywhere.
 
-Trailing stop ratchet (spec §1.4):
+Trailing stop ratchet (revised for options microstructure):
 
     Position Gain | Stop Loss Action
     --------------+------------------
-        +10%      | Move stop to breakeven
-        +20%      | Move stop to +10%
-        +25%      | Move stop to +20%
-        +40%+     | Tighten to +30%, reassess
+        +20%      | Move stop to breakeven
+        +30%      | Move stop to +10%
+        +40%      | Move stop to +20%
+        +60%+     | Tighten to +30%, reassess
 
 The stop only moves up. Once a ratchet level is reached, the position's
 `ratchet_level` is recorded and the stop is raised to the new floor.
+
+Why the higher triggers vs the original spec (+10/+20/+25/+40):
+Options have wide bid/ask spreads. The original first ratchet (+10% →
+breakeven) was triggered by normal intraday noise, then when the price
+mean-reverted, the subsequent _close_position market sell took the bid,
+turning a "protected breakeven" into a real -10% to -12% exit. Doubling
+the first trigger to +20% gives the trade room to confirm a real trend
+before we lock anything in.
 
 Hard exits (spec §1.4), checked in priority order on each tick:
   1. stop_loss          — current_price <= stop_price (capital protection first)
@@ -48,14 +56,20 @@ ExitReason = Literal[
 ET = ZoneInfo("America/New_York")
 
 # (trigger gain multiplier, new stop multiplier, ratchet level)
-# E.g. (1.10, 1.00, 1) means: at +10% gain, raise stop to entry (breakeven) and
-# move ratchet_level to 1. Subsequent ticks above +10% don't change anything
-# until the next threshold (+20%) is crossed.
+# E.g. (1.20, 1.00, 1) means: at +20% gain, raise stop to entry (breakeven) and
+# move ratchet_level to 1. Subsequent ticks above +20% don't change anything
+# until the next threshold (+30%) is crossed.
+#
+# Each level keeps a ~20pp buffer between the trigger and the new stop —
+# giving options room to breathe through normal intraday noise before
+# we lock in a level. The previous table used +10%/+20%/+25%/+40% which
+# tripped on routine wiggles and bid/ask slippage turned breakeven exits
+# into real losses; see docstring above.
 RATCHET_TABLE: tuple[tuple[Decimal, Decimal, int], ...] = (
-    (Decimal("1.10"), Decimal("1.00"), 1),
-    (Decimal("1.20"), Decimal("1.10"), 2),
-    (Decimal("1.25"), Decimal("1.20"), 3),
-    (Decimal("1.40"), Decimal("1.30"), 4),
+    (Decimal("1.20"), Decimal("1.00"), 1),  # +20% → stop to breakeven
+    (Decimal("1.30"), Decimal("1.10"), 2),  # +30% → stop to +10%
+    (Decimal("1.40"), Decimal("1.20"), 3),  # +40% → stop to +20%
+    (Decimal("1.60"), Decimal("1.30"), 4),  # +60% → stop to +30%
 )
 
 # Default tunables. Caller can override.
