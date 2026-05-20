@@ -931,7 +931,10 @@ class Orchestrator:
         })
 
         if self._notifier is not None:
-            pnl = (exit_price - record.entry_price) * Decimal(record.qty)
+            pnl = (
+                (exit_price - record.entry_price)
+                * Decimal(record.qty) * OPTION_CONTRACT_MULTIPLIER
+            )
             pnl_pct = (
                 (exit_price - record.entry_price) / record.entry_price
                 if record.entry_price > 0 else Decimal(0)
@@ -1052,7 +1055,10 @@ class Orchestrator:
 
         if self._notifier is not None:
             try:
-                pnl = (exit_price - record.entry_price) * Decimal(record.qty)
+                pnl = (
+                (exit_price - record.entry_price)
+                * Decimal(record.qty) * OPTION_CONTRACT_MULTIPLIER
+            )
                 pnl_pct = (
                     (exit_price - record.entry_price) / record.entry_price
                     if record.entry_price > 0 else Decimal(0)

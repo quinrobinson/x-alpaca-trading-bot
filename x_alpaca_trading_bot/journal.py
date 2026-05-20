@@ -19,6 +19,11 @@ import psycopg
 
 logger = logging.getLogger(__name__)
 
+# US equity options trade in 100-share contracts. A quoted option price is
+# per-share; the dollar value of one contract is price × 100. Every gross
+# dollar P&L calculation must apply this multiplier.
+OPTION_CONTRACT_MULTIPLIER = Decimal("100")
+
 
 def insert_raw_post(
     conn: psycopg.Connection,
@@ -350,8 +355,11 @@ def insert_trade(
 
     gross_pnl, pnl_pct, hold_minutes are derived here rather than supplied
     by the caller, so the math lives in one place.
+
+    gross_pnl is in real dollars — (exit − entry) per share × qty contracts
+    × 100 shares/contract. pnl_pct is per-share and needs no multiplier.
     """
-    gross_pnl = (exit_price - entry_price) * Decimal(qty)
+    gross_pnl = (exit_price - entry_price) * Decimal(qty) * OPTION_CONTRACT_MULTIPLIER
     if entry_price > 0:
         pnl_pct = (exit_price - entry_price) / entry_price
     else:

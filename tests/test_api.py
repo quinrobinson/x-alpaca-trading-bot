@@ -282,9 +282,10 @@ def test_performance_aggregates_correctly(conn: psycopg.Connection) -> None:
         assert stats["wins"] == 3
         assert stats["losses"] == 2
         assert stats["win_rate"] == pytest.approx(0.6)
-        assert Decimal(stats["total_pnl"]) == Decimal("0.30")
+        # Per-share deltas 0.30+0.50+0.20-0.50-0.20 = 0.30, ×100 shares = $30.
+        assert Decimal(stats["total_pnl"]) == Decimal("30")
         assert Decimal(stats["avg_win_pct"]) == Decimal("0.40") / Decimal(3)
-        # profit_factor: wins=0.40, losses=0.28, ratio ≈ 1.43
+        # profit_factor: ratio is multiplier-invariant — wins 100 / losses 70 ≈ 1.43
         assert stats["profit_factor"] == pytest.approx(0.40 / 0.28, rel=0.01)
 
 
@@ -471,7 +472,8 @@ def test_timeline_classifies_kinds_correctly(conn: psycopg.Connection) -> None:
     assert nvda["trade"] is None
     # TSLA closed trade carries the trade summary
     tsla = rows[1]
-    assert tsla["trade"]["gross_pnl"] == "1.2500"
+    # (5.50 - 4.25) per share × 1 qty × 100 shares = $125.00
+    assert tsla["trade"]["gross_pnl"] == "125.0000"
     assert tsla["trade"]["exit_reason"] == "stop_loss"
     assert tsla["trade"]["max_gain_pct"] == "0.4000"
     # AAPL was rejected

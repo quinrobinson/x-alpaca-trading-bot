@@ -6,7 +6,9 @@ import { fmtExpiration, fmtMoney, fmtPct, pnlColorClass } from '../util'
 export default function PositionCard({ position, livePrice, snapshot }) {
   const entry = Number(position.entry_price)
   const current = livePrice ?? entry
-  const pnl = (current - entry) * position.qty
+  // Options trade in 100-share contracts: dollar P&L = per-share move
+  // × qty contracts × 100. pnlPct is per-share so it needs no multiplier.
+  const pnl = (current - entry) * position.qty * 100
   const pnlPct = (current - entry) / entry
   const stop = Number(position.current_stop_price)
 

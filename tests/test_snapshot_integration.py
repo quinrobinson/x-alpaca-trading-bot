@@ -326,7 +326,7 @@ def test_close_trade_writes_exit_snapshot_and_trade(conn: psycopg.Connection) ->
     assert ticker == "AAPL"
     assert entry == Decimal("2.5000")
     assert exit_ == Decimal("3.1000")
-    assert gross_pnl == Decimal("0.6000")
+    assert gross_pnl == Decimal("60.0000")  # (3.10 - 2.50) * 1 qty * 100 shares
     assert pnl_pct == Decimal("0.2400")  # (3.10 - 2.50) / 2.50
     assert reason == "stop_loss"
     assert hold_minutes == 90
@@ -360,7 +360,7 @@ def test_close_trade_works_without_scheduler_state(conn: psycopg.Connection) -> 
     with conn.cursor() as cur:
         cur.execute("SELECT gross_pnl, qty, max_gain_pct, max_loss_pct FROM trades WHERE id = %s", (trade_id,))
         gross_pnl, qty, max_g, max_l = cur.fetchone()
-    assert gross_pnl == Decimal("-0.4000")  # (1.80 - 2.00) * 2
+    assert gross_pnl == Decimal("-40.0000")  # (1.80 - 2.00) * 2 qty * 100 shares
     assert qty == 2
     assert max_g is None
     assert max_l is None
