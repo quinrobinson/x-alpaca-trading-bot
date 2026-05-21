@@ -45,6 +45,7 @@ from x_alpaca_trading_bot.data_service import (
     DataService,
     MarketDataProvider,
     build_occ_symbol,
+    parse_occ_symbol,
 )
 from x_alpaca_trading_bot.parser import (
     ParseResult,
@@ -410,36 +411,160 @@ class Orchestrator:
     # ---- Reconciliation ----------------------------------------------
 
     def _reconcile_on_startup(self) -> None:
-        """Log whatever Alpaca currently shows open; do NOT auto-adopt.
+        """Adopt any open Alpaca positions back into in-memory tracking.
 
-        Manual operator intervention required if there are orphan
-        positions (use scripts/executor_manual_smoke.py to clean up).
+        The orchestrator holds open positions in `_open_positions`, which
+        is wiped on every process restart. Without re-adoption, a position
+        opened before a restart becomes an orphan — still live on Alpaca
+        with its protective stop, but unmanaged: the bot won't ratchet it,
+        won't flatten it at 15:55, and won't record/alert on its close.
+
+        Here we read Alpaca's actual open positions and rebuild a
+        PositionRecord for each, matching it back to its originating
+        signal and its live stop order.
         """
         snap = self._executor.reconcile(now=datetime.now(timezone.utc))
         self._state.last_alpaca_ok_at = snap.captured_at
-        if snap.open_orders or snap.open_positions:
-            logger.warning(
-                "startup reconciliation found state: %d open orders, %d positions",
-                len(snap.open_orders), len(snap.open_positions),
-            )
-            for o in snap.open_orders:
-                logger.warning("  open order: %s %s %s @ %s",
-                               o.alpaca_order_id, o.side, o.symbol,
-                               o.stop_price or o.limit_price)
-            for p in snap.open_positions:
-                logger.warning("  open position: %s qty=%s avg=%s",
-                               p.symbol, p.qty, p.avg_entry_price)
-            journal.insert_event(
-                self._conn, ts=snap.captured_at, severity="warning",
-                category="reconcile",
-                message="startup_state_present",
-                context={
-                    "open_orders": len(snap.open_orders),
-                    "open_positions": len(snap.open_positions),
-                },
-            )
-        else:
+
+        if not snap.open_positions and not snap.open_orders:
             logger.info("startup reconciliation: account is clean")
+            return
+
+        logger.warning(
+            "startup reconciliation: %d open positions, %d open orders — adopting",
+            len(snap.open_positions), len(snap.open_orders),
+        )
+
+        # Index live stop orders by contract symbol for quick lookup.
+        stops_by_symbol: dict[str, str] = {}
+        for o in snap.open_orders:
+            if str(o.order_type).lower().endswith("stop"):
+                stops_by_symbol[o.symbol] = o.alpaca_order_id
+
+        adopted = 0
+        for pos in snap.open_positions:
+            try:
+                if self._adopt_position(pos, stops_by_symbol):
+                    adopted += 1
+            except Exception:  # noqa: BLE001
+                logger.exception(
+                    "startup: failed to adopt %s; leaving orphaned", pos.symbol,
+                )
+
+        journal.insert_event(
+            self._conn, ts=snap.captured_at, severity="warning",
+            category="reconcile", message="startup_reconciliation",
+            context={
+                "open_positions": len(snap.open_positions),
+                "open_orders": len(snap.open_orders),
+                "adopted": adopted,
+            },
+        )
+        logger.info(
+            "startup reconciliation: adopted %d/%d open positions",
+            adopted, len(snap.open_positions),
+        )
+
+    def _adopt_position(
+        self,
+        pos: Any,             # executor.OpenPosition
+        stops_by_symbol: dict[str, str],
+    ) -> bool:
+        """Rebuild a PositionRecord for one open Alpaca position.
+
+        Returns True if adopted, False if it can't be matched to a
+        signal (in which case the position stays orphaned but is logged).
+        """
+        contract_symbol = pos.symbol
+        try:
+            ticker, expiration, option_type, strike = parse_occ_symbol(contract_symbol)
+        except Exception:  # noqa: BLE001
+            logger.warning("startup: cannot parse OCC %s; skipping", contract_symbol)
+            return False
+
+        # Match to the most recent taken signal for this exact contract
+        # that has no closing trade row yet.
+        with self._conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT s.id, s.parsed_at
+                FROM signals s
+                LEFT JOIN trades t ON t.signal_id = s.id
+                WHERE s.taken = true
+                  AND s.ticker = %s AND s.option_type = %s
+                  AND s.strike = %s AND s.expiration = %s
+                  AND t.id IS NULL
+                ORDER BY s.id DESC
+                LIMIT 1
+                """,
+                (ticker, option_type, strike, expiration),
+            )
+            row = cur.fetchone()
+        if row is None:
+            logger.warning(
+                "startup: open position %s has no matching signal; "
+                "leaving orphaned", contract_symbol,
+            )
+            return False
+        signal_id, opened_at = row
+
+        qty = abs(int(pos.qty))
+        entry_price = Decimal(str(pos.avg_entry_price))
+
+        # Stop price: prefer the live Alpaca stop order; fall back to the
+        # configured initial stop if none is on the book.
+        stop_order_id = stops_by_symbol.get(contract_symbol)
+        stop_price: Decimal | None = None
+        if stop_order_id is not None:
+            try:
+                stop_price = self._executor.get_order(stop_order_id).stop_price
+            except Exception:  # noqa: BLE001
+                logger.warning("startup: could not read stop order %s", stop_order_id)
+        if stop_price is None:
+            stop_price = (
+                entry_price * (Decimal(1) - self._cfg.stop_loss_pct)
+            ).quantize(Decimal("0.01"))
+            logger.warning(
+                "startup: %s has no stop order on Alpaca — using computed "
+                "stop %s; the strategy will re-place it on the next ratchet",
+                contract_symbol, stop_price,
+            )
+
+        # Rebuild the strategy Position. ratchet_level starts at 0: the
+        # ratchet only ever RAISES the stop (candidate > new_stop guard),
+        # so seeding it with the real — possibly already-ratcheted — stop
+        # price is safe. The stop cannot drop, and a still-elevated price
+        # simply re-ratchets on the next tick.
+        strat_pos = strategy.Position(
+            entry_price=entry_price,
+            qty=qty,
+            opened_at=opened_at,
+            expiration=expiration,
+            initial_stop_pct=self._cfg.stop_loss_pct,
+            stop_price=stop_price,
+            ratchet_level=0,
+        )
+        record = PositionRecord(
+            signal_id=signal_id, ticker=ticker, contract_symbol=contract_symbol,
+            option_type=option_type, strike=strike, expiration=expiration,
+            qty=qty, entry_price=entry_price, opened_at=opened_at,
+            strategy_position=strat_pos, stop_order_id=stop_order_id,
+            entry_order_row_id=0,  # entry already journaled; unused post-entry
+        )
+        with self._lock:
+            self._open_positions[signal_id] = record
+
+        ctx = SnapshotContext(
+            signal_id=signal_id, contract_symbol=contract_symbol,
+            underlying_ticker=ticker,
+        )
+        self._scheduler.register(ctx, opened_at=opened_at)
+
+        logger.info(
+            "startup: adopted %s signal_id=%s qty=%s entry=%s stop=%s",
+            contract_symbol, signal_id, qty, entry_price, stop_price,
+        )
+        return True
 
     # ---- Stream lifecycle ---------------------------------------------
 

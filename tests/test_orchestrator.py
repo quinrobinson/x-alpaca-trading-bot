@@ -939,3 +939,54 @@ def test_capture_due_price_tracks_is_idempotent(conn: psycopg.Connection) -> Non
             (sid,),
         )
         assert cur.fetchone()[0] == 2  # offsets 1 and 5, captured once each
+
+
+# ---- Startup reconciliation (adopt orphaned positions) -----------------
+
+def test_adopt_position_rebuilds_record_from_alpaca(conn: psycopg.Connection) -> None:
+    """A position open on Alpaca that the bot lost across a restart gets
+    re-adopted into _open_positions and re-registered for snapshots."""
+    from x_alpaca_trading_bot.executor import OpenPosition
+    orch, _, _ = _orch(conn=conn)
+    assert len(orch._open_positions) == 0
+
+    xid = journal.insert_raw_post(
+        conn, post_id="adopt-1", post_text="$AAPL 6/20 185c @ 2.50",
+        posted_at=NOW_UTC - timedelta(minutes=20),
+        received_at=NOW_UTC - timedelta(minutes=20),
+        parse_result=None, actionable=True,
+    )
+    sid = journal.insert_signal(
+        conn, x_post_id=xid, parsed_at=NOW_UTC - timedelta(minutes=20),
+        ticker="AAPL", option_type="call", strike=Decimal("185"),
+        expiration=date(2026, 6, 20), posted_price=Decimal("2.50"),
+        live_ask=Decimal("2.55"), taken=True, rejection_reason=None,
+        gate_results={},
+    )
+    pos = OpenPosition(
+        symbol="AAPL260620C00185000", qty=3,
+        avg_entry_price=Decimal("2.55"), market_value=None, current_price=None,
+    )
+    assert orch._adopt_position(pos, stops_by_symbol={}) is True
+
+    rec = orch._open_positions.get(sid)
+    assert rec is not None
+    assert rec.ticker == "AAPL"
+    assert rec.qty == 3
+    assert rec.entry_price == Decimal("2.55")
+    # No stop on Alpaca -> computed initial: 2.55 * (1 - 0.20) = 2.04
+    assert rec.strategy_position.stop_price == Decimal("2.04")
+    assert orch._scheduler.get(sid) is not None
+
+
+def test_adopt_position_skips_when_no_matching_signal(conn: psycopg.Connection) -> None:
+    """An Alpaca position with no corresponding taken signal is left
+    orphaned (and logged), not adopted."""
+    from x_alpaca_trading_bot.executor import OpenPosition
+    orch, _, _ = _orch(conn=conn)
+    pos = OpenPosition(
+        symbol="NVDA260620C00900000", qty=2,
+        avg_entry_price=Decimal("3.00"), market_value=None, current_price=None,
+    )
+    assert orch._adopt_position(pos, stops_by_symbol={}) is False
+    assert len(orch._open_positions) == 0
