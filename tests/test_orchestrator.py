@@ -233,6 +233,7 @@ def conn() -> Iterator[psycopg.Connection]:
     c = db.connect(url)
     db.run_migrations(c, Path(__file__).resolve().parent.parent / "deploy")
     with c.cursor() as cur:
+        cur.execute("DELETE FROM signal_price_tracks")
         cur.execute("DELETE FROM indicator_snapshots")
         cur.execute("DELETE FROM trades")
         cur.execute("DELETE FROM fills")
@@ -847,3 +848,94 @@ def test_disable_x_stream_drops_incoming_posts(conn: psycopg.Connection) -> None
         assert cur.fetchone()[0] == 0
         cur.execute("SELECT count(*) FROM orders")
         assert cur.fetchone()[0] == 0
+
+
+# ---- Post-signal price tracking ----------------------------------------
+
+def test_capture_due_price_tracks_records_mids(conn: psycopg.Connection) -> None:
+    """A signal received 6 min ago gets price-track rows for the +1m and
+    +5m offsets; +15m and +30m aren't due yet."""
+    orch, _, _ = _orch(conn=conn)
+    xid = journal.insert_raw_post(
+        conn, post_id="pt-1", post_text="$AAPL 6/20 185c @ 2.50",
+        posted_at=NOW_UTC - timedelta(minutes=6),
+        received_at=NOW_UTC - timedelta(minutes=6),
+        parse_result=None, actionable=True,
+    )
+    sid = journal.insert_signal(
+        conn, x_post_id=xid, parsed_at=NOW_UTC - timedelta(minutes=6),
+        ticker="AAPL", option_type="call", strike=Decimal("185"),
+        expiration=date(2026, 6, 20), posted_price=Decimal("2.50"),
+        live_ask=Decimal("2.55"), taken=False, rejection_reason="spread",
+        gate_results={},
+    )
+    orch._capture_due_price_tracks(NOW_UTC)
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT offset_minutes, option_mid FROM signal_price_tracks "
+            "WHERE signal_id = %s ORDER BY offset_minutes",
+            (sid,),
+        )
+        rows = cur.fetchall()
+    assert [r[0] for r in rows] == [1, 5]
+    # HappyQuoteProvider: mid = (2.55 + 2.50) / 2 = 2.525
+    assert all(r[1] == Decimal("2.5250") for r in rows)
+
+
+def test_capture_due_price_tracks_skips_past_grace_window(conn: psycopg.Connection) -> None:
+    """Offsets whose [target, target+grace] window has already closed are
+    skipped — a late catch-up must not record a stale price as on-time."""
+    orch, _, _ = _orch(conn=conn)
+    xid = journal.insert_raw_post(
+        conn, post_id="pt-2", post_text="$AAPL 6/20 185c @ 2.50",
+        posted_at=NOW_UTC - timedelta(minutes=20),
+        received_at=NOW_UTC - timedelta(minutes=20),
+        parse_result=None, actionable=True,
+    )
+    sid = journal.insert_signal(
+        conn, x_post_id=xid, parsed_at=NOW_UTC - timedelta(minutes=20),
+        ticker="AAPL", option_type="call", strike=Decimal("185"),
+        expiration=date(2026, 6, 20), posted_price=Decimal("2.50"),
+        live_ask=Decimal("2.55"), taken=False, rejection_reason="spread",
+        gate_results={},
+    )
+    orch._capture_due_price_tracks(NOW_UTC)
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT offset_minutes FROM signal_price_tracks "
+            "WHERE signal_id = %s ORDER BY offset_minutes",
+            (sid,),
+        )
+        rows = [r[0] for r in cur.fetchall()]
+    # parsed 20 min ago, grace 10 min:
+    #   +1m  window [1,11]  closed -> skip
+    #   +5m  window [5,15]  closed -> skip
+    #   +15m window [15,25] open   -> capture
+    #   +30m not due yet
+    assert rows == [15]
+
+
+def test_capture_due_price_tracks_is_idempotent(conn: psycopg.Connection) -> None:
+    """Running the capture twice must not double-insert a (signal,offset)."""
+    orch, _, _ = _orch(conn=conn)
+    xid = journal.insert_raw_post(
+        conn, post_id="pt-3", post_text="$AAPL 6/20 185c @ 2.50",
+        posted_at=NOW_UTC - timedelta(minutes=6),
+        received_at=NOW_UTC - timedelta(minutes=6),
+        parse_result=None, actionable=True,
+    )
+    sid = journal.insert_signal(
+        conn, x_post_id=xid, parsed_at=NOW_UTC - timedelta(minutes=6),
+        ticker="AAPL", option_type="call", strike=Decimal("185"),
+        expiration=date(2026, 6, 20), posted_price=Decimal("2.50"),
+        live_ask=Decimal("2.55"), taken=False, rejection_reason="spread",
+        gate_results={},
+    )
+    orch._capture_due_price_tracks(NOW_UTC)
+    orch._capture_due_price_tracks(NOW_UTC)
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT count(*) FROM signal_price_tracks WHERE signal_id = %s",
+            (sid,),
+        )
+        assert cur.fetchone()[0] == 2  # offsets 1 and 5, captured once each

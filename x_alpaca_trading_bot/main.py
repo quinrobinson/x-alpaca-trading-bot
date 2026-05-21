@@ -93,6 +93,15 @@ _RECOMPUTED_SWITCHES = frozenset({
 # before the bot does too many wasted advance-position passes.
 _RECONCILE_EVERY_N_TICKS = 6
 
+# Post-signal price-tracking study: for every signal (taken OR rejected),
+# record the option mid at these minute offsets after the bot received
+# the signal. The resulting signal_price_tracks rows answer "is there
+# capturable move after the tweet". A capture only happens inside a grace
+# window after its target so a bot restart can't backfill a wildly-late
+# price as if it were on time.
+_PRICE_TRACK_OFFSETS_MIN = (1, 5, 15, 30)
+_PRICE_TRACK_GRACE = timedelta(minutes=10)
+
 
 def _stream_listener_alive(listener: Any | None) -> bool:
     """True iff tweepy's background stream thread is currently running.
@@ -386,6 +395,16 @@ class Orchestrator:
             except Exception:  # noqa: BLE001
                 logger.exception("reconcile_positions failed; continuing")
 
+        # 7. Post-signal price tracking — capture option mids for the
+        #    research study (signal_price_tracks). Cheap when nothing is
+        #    due; throttled to the reconciliation cadence so we don't
+        #    query for due captures on every 5s tick.
+        if self._state.tick_count % _RECONCILE_EVERY_N_TICKS == 0:
+            try:
+                self._capture_due_price_tracks(now)
+            except Exception:  # noqa: BLE001
+                logger.exception("capture_due_price_tracks failed; continuing")
+
         self._state.last_tick_at = now
 
     # ---- Reconciliation ----------------------------------------------
@@ -466,7 +485,12 @@ class Orchestrator:
                 # low-volume target accounts where tweets can be sparse.
                 on_keep_alive=self._on_stream_connected,
             )
-            self._stream_listener.filter(threaded=True)
+            # tweet_fields=["created_at"] is required for tweet.created_at
+            # to be populated — without it tweepy omits the field and
+            # XStreamListener.on_tweet falls back to wall-clock now, so
+            # posted_at == received_at and the time_age staleness gate
+            # (and any latency measurement) is blind.
+            self._stream_listener.filter(threaded=True, tweet_fields=["created_at"])
             logger.info("x stream listener started")
         except Exception as exc:  # noqa: BLE001
             # Bad bearer token, target id, network, or tweepy version drift.
@@ -1155,6 +1179,69 @@ class Orchestrator:
                 exit_reason=exit_reason,
                 now=now,
             )
+
+    # ---- Post-signal price tracking (research study) -----------------
+
+    def _capture_due_price_tracks(self, now: datetime) -> None:
+        """Record the option mid for recent signals at fixed offsets after
+        the bot received them — feeds the signal_price_tracks study.
+
+        Stateless: what's due is derived from the DB each call by
+        cross-joining signals against the offset list and anti-joining
+        whatever's already captured. A bot restart loses nothing. Each
+        capture only fires inside [target, target + grace] so a late
+        catch-up can't record a stale price as if it were on time.
+        """
+        offsets = list(_PRICE_TRACK_OFFSETS_MIN)
+        grace_min = int(_PRICE_TRACK_GRACE.total_seconds() // 60)
+        with self._conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT s.id, s.ticker, s.option_type, s.strike, s.expiration, off.n
+                FROM signals s
+                CROSS JOIN unnest(%s::int[]) AS off(n)
+                LEFT JOIN signal_price_tracks t
+                       ON t.signal_id = s.id AND t.offset_minutes = off.n
+                WHERE t.id IS NULL
+                  AND s.parsed_at > %s
+                  AND %s >= s.parsed_at + (off.n * INTERVAL '1 minute')
+                  AND %s <  s.parsed_at + (off.n * INTERVAL '1 minute')
+                            + (%s * INTERVAL '1 minute')
+                """,
+                (
+                    offsets,
+                    now - timedelta(minutes=max(offsets) + grace_min),
+                    now,
+                    now,
+                    grace_min,
+                ),
+            )
+            due = cur.fetchall()
+
+        for signal_id, ticker, option_type, strike, expiration, offset_n in due:
+            mid = None
+            try:
+                quote = self._ds.get_option_quote(
+                    ticker, expiration, option_type, strike,
+                )
+                if quote is not None:
+                    mid = quote.mid
+            except Exception:  # noqa: BLE001
+                logger.exception(
+                    "price-track quote failed signal_id=%s offset=%s",
+                    signal_id, offset_n,
+                )
+            with self._conn.cursor() as cur:
+                cur.execute(
+                    """
+                    INSERT INTO signal_price_tracks
+                        (signal_id, offset_minutes, captured_at, option_mid)
+                    VALUES (%s, %s, %s, %s)
+                    ON CONFLICT (signal_id, offset_minutes) DO NOTHING
+                    """,
+                    (signal_id, offset_n, now, mid),
+                )
+            self._conn.commit()
 
     # ---- Monitor snapshots -------------------------------------------
 

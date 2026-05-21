@@ -53,6 +53,7 @@ def conn() -> Iterator[psycopg.Connection]:
     # Clean dependent tables before each test for deterministic state.
     # Order matters — child tables first to satisfy FK constraints.
     with c.cursor() as cur:
+        cur.execute("DELETE FROM signal_price_tracks")
         cur.execute("DELETE FROM indicator_snapshots")
         cur.execute("DELETE FROM trades")
         cur.execute("DELETE FROM fills")

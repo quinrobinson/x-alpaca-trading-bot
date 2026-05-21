@@ -172,3 +172,21 @@ CREATE TABLE IF NOT EXISTS bot_config (
 
 INSERT INTO bot_config (id) VALUES (1)
 ON CONFLICT (id) DO NOTHING;
+
+-- ============================================================
+-- Signal price tracks — post-signal option-price movement study
+-- ============================================================
+-- For every signal (taken OR rejected), the orchestrator records the
+-- option's mid price at fixed offsets after the bot received it. This
+-- is the dataset that answers "is there capturable move after the
+-- tweet" — i.e. whether copy-trading this source can work at all.
+-- One row per (signal, offset); UNIQUE makes the capture idempotent.
+CREATE TABLE IF NOT EXISTS signal_price_tracks (
+    id              BIGSERIAL PRIMARY KEY,
+    signal_id       BIGINT NOT NULL REFERENCES signals(id),
+    offset_minutes  INTEGER NOT NULL,            -- 1, 5, 15, 30
+    captured_at     TIMESTAMPTZ NOT NULL,
+    option_mid      NUMERIC(10, 4),              -- null if no quote available
+    UNIQUE (signal_id, offset_minutes)
+);
+CREATE INDEX IF NOT EXISTS idx_price_tracks_signal ON signal_price_tracks (signal_id);

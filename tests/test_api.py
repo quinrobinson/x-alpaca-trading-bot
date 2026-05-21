@@ -92,6 +92,7 @@ def conn() -> Iterator[psycopg.Connection]:
     c = db.connect(url)
     db.run_migrations(c, Path(__file__).resolve().parent.parent / "deploy")
     with c.cursor() as cur:
+        cur.execute("DELETE FROM signal_price_tracks")
         cur.execute("DELETE FROM indicator_snapshots")
         cur.execute("DELETE FROM trades")
         cur.execute("DELETE FROM fills")

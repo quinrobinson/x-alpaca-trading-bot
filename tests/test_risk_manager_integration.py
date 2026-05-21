@@ -52,6 +52,7 @@ def conn() -> Iterator[psycopg.Connection]:
 
     # Clear dependent tables in FK order.
     with c.cursor() as cur:
+        cur.execute("DELETE FROM signal_price_tracks")
         cur.execute("DELETE FROM events")
         cur.execute("DELETE FROM indicator_snapshots")
         cur.execute("DELETE FROM trades")
