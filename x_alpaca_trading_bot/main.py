@@ -168,6 +168,10 @@ class PositionRecord:
     strategy_position: strategy.Position
     stop_order_id: str | None              # currently-active protective stop on Alpaca
     entry_order_row_id: int                # journal.orders.id
+    # Most recent option mid seen by _advance_position. Refreshed every
+    # tick (~5s); surfaced via /positions so the dashboard can show live
+    # unrealized P&L without depending on a WebSocket push.
+    last_option_mid: Decimal | None = None
 
 
 @dataclass
@@ -802,6 +806,8 @@ class Orchestrator:
         self._state.last_alpaca_ok_at = now
 
         current_price = quote.mid
+        # Stash the live mid so /positions can serve fresh unrealized P&L.
+        record.last_option_mid = current_price
         # Track running max-gain / max-loss for trades.max_gain_pct / max_loss_pct
         gain_pct = (current_price - record.entry_price) / record.entry_price
         self._scheduler.update_extremes(record.signal_id, gain_pct)

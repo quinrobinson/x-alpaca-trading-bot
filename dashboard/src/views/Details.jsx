@@ -22,26 +22,26 @@ export default function Details() {
   const [positions, setPositions] = useState([])
   const [signals, setSignals] = useState([])
   const [performance, setPerformance] = useState(null)
-  const [latestSnapshot, setLatestSnapshot] = useState({})  // signal_id -> last trade.updated payload
-  const [livePrices, setLivePrices] = useState({})          // signal_id -> last mid price seen
   const [killSwitches, setKillSwitches] = useState([])
-  const [marketSectorString, setMarketSectorString] = useState(null)
+  const [marketCtx, setMarketCtx] = useState(null)
   const [lastSignalTs, setLastSignalTs] = useState(null)
 
   // ---- REST polling -----------------------------------------------------
 
   const fetchAll = useCallback(async () => {
     try {
-      const [h, p, s, perf] = await Promise.all([
+      const [h, p, s, perf, mkt] = await Promise.all([
         fetch(apiUrl('/healthz')).then(r => r.ok ? r.json() : null),
         fetch(apiUrl('/positions')).then(r => r.ok ? r.json() : []),
         fetch(apiUrl('/signals?limit=50')).then(r => r.ok ? r.json() : []),
         fetch(apiUrl('/performance')).then(r => r.ok ? r.json() : null),
+        fetch(apiUrl('/market')).then(r => r.ok ? r.json() : null),
       ])
       if (h) setHealth(h)
       if (Array.isArray(p)) setPositions(p)
       if (Array.isArray(s)) setSignals(s)
       if (perf) setPerformance(perf)
+      if (mkt) setMarketCtx(mkt)
     } catch (err) {
       // eslint-disable-next-line no-console
       console.warn('poll failed', err)
@@ -88,18 +88,6 @@ export default function Details() {
           if (perf) setPerformance(perf)
         }).catch(() => {})
         break
-      case 'trade.updated':
-        // Periodic indicator snapshot — update livePrices + greeks panels.
-        if (msg.payload?.signal_id != null) {
-          setLatestSnapshot(prev => ({ ...prev, [msg.payload.signal_id]: msg.payload }))
-          if (msg.payload.option_mid) {
-            setLivePrices(prev => ({ ...prev, [msg.payload.signal_id]: Number(msg.payload.option_mid) }))
-          }
-          if (msg.payload.sector_etf_trend) {
-            setMarketSectorString(msg.payload.sector_etf_trend)
-          }
-        }
-        break
       case 'killswitch.tripped':
         setKillSwitches(msg.payload?.tripped ?? [])
         break
@@ -114,8 +102,6 @@ export default function Details() {
   const { status: wsStatus } = useWebSocket(wsUrl('/ws'), { onEvent: handleWs })
 
   // ---- Layout -----------------------------------------------------------
-
-  const firstSnapshot = Object.values(latestSnapshot)[0]
 
   return (
     <div className="min-h-screen flex flex-col">
@@ -142,8 +128,8 @@ export default function Details() {
             <PositionCard
               key={pos.signal_id}
               position={pos}
-              livePrice={livePrices[pos.signal_id]}
-              snapshot={latestSnapshot[pos.signal_id]}
+              livePrice={pos.live_mid != null ? Number(pos.live_mid) : undefined}
+              snapshot={pos.snapshot}
             />
           ))}
         </section>
@@ -152,8 +138,8 @@ export default function Details() {
           <div className="card p-5 h-full">
             <h2 className="mono-label mb-3" style={{ fontSize: 11 }}>Market context</h2>
             <MarketContext
-              snapshot={firstSnapshot}
-              latestSectorString={marketSectorString}
+              snapshot={marketCtx}
+              latestSectorString={marketCtx?.sector_etf_trend}
             />
           </div>
         </section>

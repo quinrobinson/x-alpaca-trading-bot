@@ -26,11 +26,13 @@ def list_open_positions(request: Request) -> list[dict[str, Any]]:
     if not records:
         return []
 
-    # One DB roundtrip to fetch all originating posts for the open signals.
     conn = request.app.state.conn
+    signal_ids = [r.signal_id for r in records]
     posts_by_signal_id: dict[int, dict[str, Any]] = {}
+    snapshot_by_signal_id: dict[int, dict[str, Any]] = {}
+
     if conn is not None:
-        signal_ids = [r.signal_id for r in records]
+        # Originating tweets.
         with conn.cursor() as cur:
             cur.execute(
                 """
@@ -45,6 +47,37 @@ def list_open_positions(request: Request) -> list[dict[str, Any]]:
                 posts_by_signal_id[sid] = {
                     "post_text": text,
                     "posted_at": posted_at.isoformat() if posted_at else None,
+                }
+
+        # Latest indicator snapshot per open position — feeds the
+        # dashboard's Greeks & indicators panel. DISTINCT ON keeps only
+        # the most recent ts for each signal_id.
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT DISTINCT ON (signal_id)
+                    signal_id, ts, snapshot_type,
+                    delta, gamma, theta, vega, iv,
+                    rsi_14, vwap, atr_14, option_mid
+                FROM indicator_snapshots
+                WHERE signal_id = ANY(%s)
+                ORDER BY signal_id, ts DESC
+                """,
+                (signal_ids,),
+            )
+            cols = [
+                "signal_id", "ts", "snapshot_type",
+                "delta", "gamma", "theta", "vega", "iv",
+                "rsi_14", "vwap", "atr_14", "option_mid",
+            ]
+            for row in cur.fetchall():
+                d = dict(zip(cols, row))
+                sid = d.pop("signal_id")
+                # Stringify numerics + the timestamp for clean JSON.
+                snapshot_by_signal_id[sid] = {
+                    k: (v.isoformat() if k == "ts" and v is not None
+                        else str(v) if v is not None else None)
+                    for k, v in d.items()
                 }
 
     out: list[dict[str, Any]] = []
@@ -63,6 +96,15 @@ def list_open_positions(request: Request) -> list[dict[str, Any]]:
             "current_stop_price": str(sp.stop_price),
             "ratchet_level": sp.ratchet_level,
             "stop_order_id": record.stop_order_id,
+            # Live option mid the orchestrator saw on its last tick (~5s
+            # fresh). None until the first tick after the position opens.
+            # getattr keeps this resilient to any record shape that
+            # predates the field.
+            "live_mid": (
+                str(getattr(record, "last_option_mid", None))
+                if getattr(record, "last_option_mid", None) is not None else None
+            ),
+            "snapshot": snapshot_by_signal_id.get(record.signal_id),
             "source_post": posts_by_signal_id.get(record.signal_id),
         })
     return out

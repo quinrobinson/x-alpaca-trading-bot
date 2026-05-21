@@ -15,10 +15,7 @@ export default function Home() {
   const [positions, setPositions] = useState([])
   const [timeline, setTimeline] = useState([])
   const [performance, setPerformance] = useState(null)
-  const [latestSnapshot, setLatestSnapshot] = useState({})
-  const [livePrices, setLivePrices] = useState({})
   const [killSwitches, setKillSwitches] = useState([])
-  const [marketSectorString, setMarketSectorString] = useState(null)
   const [marketCtx, setMarketCtx] = useState(null)
   const [showRejected, setShowRejected] = useState(false)
 
@@ -91,15 +88,6 @@ export default function Home() {
         fetchPerformance()
         fetchTimeline()
         break
-      case 'trade.updated':
-        if (msg.payload?.signal_id != null) {
-          setLatestSnapshot(prev => ({ ...prev, [msg.payload.signal_id]: msg.payload }))
-          if (msg.payload.option_mid) {
-            setLivePrices(prev => ({ ...prev, [msg.payload.signal_id]: Number(msg.payload.option_mid) }))
-          }
-          if (msg.payload.sector_etf_trend) setMarketSectorString(msg.payload.sector_etf_trend)
-        }
-        break
       case 'killswitch.tripped':
         setKillSwitches(msg.payload?.tripped ?? [])
         break
@@ -114,12 +102,6 @@ export default function Home() {
   const { status: wsStatus } = useWebSocket(wsUrl('/ws'), { onEvent: handleWs })
 
   // ---- Render ----------------------------------------------------------
-
-  // Prefer the WS-driven snapshot (richest data when a position is open),
-  // fall back to /market polling so the section stays populated otherwise.
-  const positionSnapshot = Object.values(latestSnapshot)[0]
-  const marketSnapshot = positionSnapshot ?? marketCtx
-  const sectorString = marketSectorString ?? marketCtx?.sector_etf_trend
 
   return (
     <div className="min-h-screen flex flex-col max-w-3xl mx-auto lg:max-w-6xl">
@@ -142,8 +124,8 @@ export default function Home() {
               <OpenPositionCard
                 key={p.signal_id}
                 position={p}
-                livePrice={livePrices[p.signal_id]}
-                snapshot={latestSnapshot[p.signal_id]}
+                livePrice={p.live_mid != null ? Number(p.live_mid) : undefined}
+                snapshot={p.snapshot}
               />
             ))
           )}
@@ -152,8 +134,8 @@ export default function Home() {
 
           <CollapsibleSection title="Market context">
             <MarketContext
-              snapshot={marketSnapshot}
-              latestSectorString={sectorString}
+              snapshot={marketCtx}
+              latestSectorString={marketCtx?.sector_etf_trend}
             />
           </CollapsibleSection>
         </aside>
