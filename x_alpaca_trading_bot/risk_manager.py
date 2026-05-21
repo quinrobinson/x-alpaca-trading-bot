@@ -55,6 +55,14 @@ KILL_SWITCH_NAMES: tuple[str, ...] = (
 
 DEFAULT_CONNECTION_STALL_SECONDS = 60
 
+# After a consecutive-loss streak trips the kill switch, the bot stays
+# paused for this long; then the switch auto-clears and trading resumes.
+# This preserves the "stop and let conditions change" intent without
+# leaving the bot permanently dead waiting for a manual operator clear —
+# which matters especially in paper mode, where a stuck switch just kills
+# data collection. A genuine ongoing streak will simply re-trip.
+DEFAULT_CONSECUTIVE_LOSS_COOLDOWN = timedelta(minutes=30)
+
 
 @dataclass(frozen=True)
 class SessionState:
@@ -65,9 +73,9 @@ class SessionState:
       - current equity (realized P&L today + unrealized via data_service)
       - current consecutive loss streak (from trades table)
       - last heartbeat timestamps for X stream and Alpaca
+      - the newest trades.closed_at, so the consecutive-loss switch can
+        auto-clear once its cooldown has elapsed
       - the set of switches the orchestrator currently considers tripped
-        (so a tripped 'consecutive_losses' persists across calls until the
-        operator clears it)
     """
 
     starting_equity: Decimal
@@ -77,6 +85,7 @@ class SessionState:
     last_alpaca_ok_at: datetime | None       # tz-aware
     market_open: bool
     active_switches: frozenset[str] = field(default_factory=frozenset)
+    last_trade_closed_at: datetime | None = None   # newest trades.closed_at, tz-aware
 
 
 @dataclass(frozen=True)
@@ -94,6 +103,7 @@ def evaluate(
     daily_loss_kill_pct: Decimal,
     max_consecutive_losses: int,
     connection_stall_seconds: int = DEFAULT_CONNECTION_STALL_SECONDS,
+    consecutive_loss_cooldown: timedelta = DEFAULT_CONSECUTIVE_LOSS_COOLDOWN,
 ) -> RiskDecision:
     """Pure check: which kill switches should be tripped given current state?
 
@@ -112,9 +122,22 @@ def evaluate(
     if loss_pct >= daily_loss_kill_pct:
         new.add("daily_loss")
 
-    # 2. Consecutive losses — strict threshold (>= max_consecutive_losses).
+    # 2. Consecutive losses — trips on a streak of >= max_consecutive_losses,
+    #    but auto-clears once `consecutive_loss_cooldown` has elapsed since
+    #    the last trade closed. Without the cooldown the switch is sticky
+    #    and needs a manual operator clear — a dead bot until someone
+    #    intervenes. The cooldown keeps the "pause and reassess" intent
+    #    while letting the bot resume on its own; a real ongoing streak
+    #    just re-trips on the next loss. The orchestrator recomputes this
+    #    switch each tick (it's not carried in active_switches) so the
+    #    cooldown can actually take effect.
     if state.consecutive_losses >= max_consecutive_losses:
-        new.add("consecutive_losses")
+        cooled_off = (
+            state.last_trade_closed_at is not None
+            and (now - state.last_trade_closed_at) >= consecutive_loss_cooldown
+        )
+        if not cooled_off:
+            new.add("consecutive_losses")
 
     # 3 & 4. Connection switches only fire during market hours; off-hours,
     # we expect the streams to be quiet.
@@ -144,6 +167,7 @@ def evaluate_and_log(
     daily_loss_kill_pct: Decimal,
     max_consecutive_losses: int,
     connection_stall_seconds: int = DEFAULT_CONNECTION_STALL_SECONDS,
+    consecutive_loss_cooldown: timedelta = DEFAULT_CONSECUTIVE_LOSS_COOLDOWN,
     context: dict[str, Any] | None = None,
 ) -> RiskDecision:
     """evaluate() + persist a row to events. One call satisfies Phase 5 gate 3."""
@@ -153,6 +177,7 @@ def evaluate_and_log(
         daily_loss_kill_pct=daily_loss_kill_pct,
         max_consecutive_losses=max_consecutive_losses,
         connection_stall_seconds=connection_stall_seconds,
+        consecutive_loss_cooldown=consecutive_loss_cooldown,
     )
     severity = "warning" if not decision.accepted else "info"
     if decision.newly_tripped:
@@ -182,6 +207,20 @@ def evaluate_and_log(
 
 
 # ---- SQL helpers (use trades table, take time explicitly) -----------------
+
+def last_trade_closed_at(conn: psycopg.Connection) -> datetime | None:
+    """The most recent trades.closed_at, or None if no trades exist.
+
+    Feeds the consecutive-loss cooldown: once this is older than the
+    cooldown window, the consecutive_losses kill switch auto-clears.
+    """
+    with conn.cursor() as cur:
+        cur.execute("SELECT MAX(closed_at) FROM trades")
+        row = cur.fetchone()
+    if row is None or row[0] is None:
+        return None
+    return row[0]
+
 
 def realized_pnl_today(conn: psycopg.Connection, session_date: date) -> Decimal:
     """Sum gross_pnl over trades closed on `session_date`."""

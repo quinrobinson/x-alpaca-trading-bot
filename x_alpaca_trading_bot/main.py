@@ -73,12 +73,18 @@ OPTION_CONTRACT_MULTIPLIER = Decimal("100")
 # Rejection reason emitted when no whole-contract size fits the spend cap.
 TOO_EXPENSIVE_REASON = "too_expensive"
 
-# Kill switches that should auto-clear when the underlying condition
-# recovers. The orchestrator strips these from active_switches before
-# each risk evaluation so risk_manager.evaluate recomputes them fresh
-# from heartbeat data. Capital switches (daily_loss, consecutive_losses)
-# are sticky and persist across calls.
-_CONNECTION_SWITCHES = frozenset({"x_stream_disconnected", "alpaca_disconnected"})
+# Kill switches that should auto-clear when their condition recovers.
+# The orchestrator strips these from active_switches before each risk
+# evaluation so risk_manager.evaluate recomputes them fresh:
+#   - x_stream_disconnected / alpaca_disconnected: clear on reconnect
+#   - consecutive_losses: clears after its cooldown window elapses
+# daily_loss is intentionally NOT here — it stays latched for the
+# session and clears next day when realized_pnl_today resets.
+_RECOMPUTED_SWITCHES = frozenset({
+    "x_stream_disconnected",
+    "alpaca_disconnected",
+    "consecutive_losses",
+})
 
 # Run the full position reconciliation (compare in-memory _open_positions
 # against Alpaca's actual position list) every N ticks. At a 5-second
@@ -1242,16 +1248,18 @@ class Orchestrator:
         # without making its own Alpaca call.
         self._state.market_open = market_open
 
-        # Connection switches (x_stream_disconnected, alpaca_disconnected)
-        # must auto-clear when the heartbeats recover. risk_manager.evaluate
-        # always unions newly-tripped with active_switches, so once a
-        # connection switch is in active_switches it would persist forever
-        # even after the connection healed. Strip them here so evaluate
-        # recomputes them fresh from the heartbeat data each tick. Capital
-        # switches (daily_loss, consecutive_losses) DO need to persist, so
-        # they stay in active_switches as before.
+        # Some switches must auto-clear when their condition recovers.
+        # risk_manager.evaluate unions newly-tripped with active_switches,
+        # so anything left in active_switches persists forever. Strip the
+        # self-healing switches here so evaluate recomputes them fresh:
+        #   - x_stream_disconnected / alpaca_disconnected: clear when the
+        #     heartbeats recover
+        #   - consecutive_losses: clears once its cooldown elapses (see
+        #     risk_manager.DEFAULT_CONSECUTIVE_LOSS_COOLDOWN)
+        # daily_loss is NOT stripped — it stays latched for the session
+        # and clears naturally next day when realized_pnl_today resets.
         last_x = self._state.last_x_received_at
-        active = self._state.active_switches - _CONNECTION_SWITCHES
+        active = self._state.active_switches - _RECOMPUTED_SWITCHES
         if self._runtime_config().disable_x_stream:
             # Operator pause: keep the heartbeat fresh so the switch
             # doesn't re-trip in risk_manager.evaluate this call.
@@ -1276,6 +1284,7 @@ class Orchestrator:
             last_alpaca_ok_at=self._state.last_alpaca_ok_at,
             market_open=market_open,
             active_switches=active,
+            last_trade_closed_at=risk_manager.last_trade_closed_at(self._conn),
         )
 
 

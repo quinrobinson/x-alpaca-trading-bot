@@ -37,6 +37,7 @@ def _state(
     last_alpaca_ok_at: datetime | None = None,
     market_open: bool = True,
     active_switches: frozenset[str] = frozenset(),
+    last_trade_closed_at: datetime | None = None,
 ) -> SessionState:
     # Default heartbeats to "just received" so the connection switches don't
     # trip incidentally in tests that aren't about connections.
@@ -52,6 +53,7 @@ def _state(
         last_alpaca_ok_at=last_alpaca_ok_at,
         market_open=market_open,
         active_switches=active_switches,
+        last_trade_closed_at=last_trade_closed_at,
     )
 
 
@@ -126,6 +128,46 @@ def test_consecutive_threshold_configurable() -> None:
         state, NOW,
         daily_loss_kill_pct=DAILY_LOSS_KILL_PCT,
         max_consecutive_losses=3,
+    )
+    assert d.accepted is False
+    assert "consecutive_losses" in d.tripped_switches
+
+
+def test_consecutive_losses_trips_when_last_trade_is_recent() -> None:
+    """A streak with the last trade inside the cooldown window stays tripped."""
+    state = _state(
+        consecutive_losses=4,
+        last_trade_closed_at=NOW - timedelta(minutes=5),
+    )
+    d = _evaluate(state)
+    assert d.accepted is False
+    assert "consecutive_losses" in d.tripped_switches
+
+
+def test_consecutive_losses_auto_clears_after_cooldown() -> None:
+    """Once the cooldown elapses since the last trade, the switch clears
+    on its own even though the loss count is still over the threshold."""
+    state = _state(
+        consecutive_losses=4,
+        last_trade_closed_at=NOW - timedelta(minutes=45),  # past the 30-min cooldown
+    )
+    d = _evaluate(state)
+    assert d.accepted is True
+    assert "consecutive_losses" not in d.tripped_switches
+
+
+def test_consecutive_loss_cooldown_is_configurable() -> None:
+    """A caller can pass a custom cooldown window."""
+    state = _state(
+        consecutive_losses=4,
+        last_trade_closed_at=NOW - timedelta(minutes=45),
+    )
+    # With a 90-minute cooldown, 45 minutes elapsed is NOT enough — still tripped.
+    d = evaluate(
+        state, NOW,
+        daily_loss_kill_pct=DAILY_LOSS_KILL_PCT,
+        max_consecutive_losses=MAX_CONSECUTIVE_LOSSES,
+        consecutive_loss_cooldown=timedelta(minutes=90),
     )
     assert d.accepted is False
     assert "consecutive_losses" in d.tripped_switches
