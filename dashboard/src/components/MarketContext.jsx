@@ -12,7 +12,10 @@ export default function MarketContext({ snapshot, latestSectorString }) {
   return (
     <div>
       <div className="grid grid-cols-2 gap-3">
-        <BigStat label="VIX" value={vix ?? '—'} />
+        {/* `vix` actually carries the VIXY ETF price — a volatility proxy.
+            See data_service._fetch_vix. Labeled VIXY so the number isn't
+            misread as the VIX index level. */}
+        <BigStat label="VIXY" value={vix ?? '—'} />
         <BigStat
           label="SPY vs EMA21"
           value={spy ?? '—'}

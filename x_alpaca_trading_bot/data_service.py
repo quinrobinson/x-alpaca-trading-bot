@@ -124,6 +124,24 @@ def polygon_option_ticker(occ_symbol: str) -> str:
     return f"O:{occ_symbol}"
 
 
+def parse_occ_symbol(occ_symbol: str) -> tuple[str, date, OptionType, Decimal]:
+    """Inverse of build_occ_symbol.
+
+    'AAPL260620C00185000' -> ('AAPL', date(2026, 6, 20), 'call', Decimal('185')).
+    Trailing layout: 6-digit YYMMDD + 1-char C|P + 8-digit strike×1000.
+    """
+    from datetime import datetime as _dt
+
+    strike_milli = int(occ_symbol[-8:])
+    cp = occ_symbol[-9]
+    yymmdd = occ_symbol[-15:-9]
+    ticker = occ_symbol[:-15]
+    expiration = _dt.strptime(yymmdd, "%y%m%d").date()
+    option_type: OptionType = "call" if cp.upper() == "C" else "put"
+    strike = Decimal(strike_milli) / Decimal(1000)
+    return ticker, expiration, option_type, strike
+
+
 # ---- Real DataService implementation ---------------------------------------
 # Heavy lifting (Alpaca, Polygon, pandas-ta) is imported lazily inside __init__
 # so that this module is cheap to import for unit tests that only need the
@@ -212,25 +230,64 @@ class DataService:
     # -- Greeks + IV --
 
     def get_greeks(self, contract_symbol: str) -> Greeks:
-        snap = self._polygon_option_snapshot(contract_symbol)
-        if snap is None:
+        """Delta/gamma/theta/vega, computed locally via Black-Scholes.
+
+        Replaces the Polygon snapshot (which this account's plan tier
+        403s). Inputs — option mid, underlying spot, strike, DTE — all
+        come from free real-time feeds. See greeks.py for the math.
+        """
+        result = self._local_greeks(contract_symbol)
+        if result is None:
             return Greeks(delta=None, gamma=None, theta=None, vega=None)
-        greeks = snap.get("greeks") or {}
         return Greeks(
-            delta=_to_decimal(greeks.get("delta")),
-            gamma=_to_decimal(greeks.get("gamma")),
-            theta=_to_decimal(greeks.get("theta")),
-            vega=_to_decimal(greeks.get("vega")),
+            delta=_to_decimal(result.delta),
+            gamma=_to_decimal(result.gamma),
+            theta=_to_decimal(result.theta),
+            vega=_to_decimal(result.vega),
         )
 
     def get_iv_data(self, contract_symbol: str) -> IVData:
-        snap = self._polygon_option_snapshot(contract_symbol)
-        if snap is None:
+        """Implied volatility, back-solved from the market option price.
+
+        iv_rank / iv_percentile stay None until we maintain a rolling IV
+        history table to rank against.
+        """
+        result = self._local_greeks(contract_symbol)
+        if result is None:
             return IVData(iv=None, iv_rank=None, iv_percentile=None)
         return IVData(
-            iv=_to_decimal(snap.get("implied_volatility")),
-            iv_rank=None,        # populated once we build a 252-day IV history table
-            iv_percentile=None,  # ditto
+            iv=_to_decimal(result.iv),
+            iv_rank=None,
+            iv_percentile=None,
+        )
+
+    def _local_greeks(self, contract_symbol: str) -> "Any":
+        """Fetch the live inputs and run the Black-Scholes solver.
+
+        Returns a greeks.GreeksResult, or None if any input is missing
+        or the solver can't converge. Each snapshot calls this twice
+        (greeks + iv) — fine at a 15-minute cadence.
+        """
+        from x_alpaca_trading_bot import greeks as greeks_mod
+
+        try:
+            ticker, expiration, option_type, strike = parse_occ_symbol(contract_symbol)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("could not parse OCC symbol %s: %s", contract_symbol, exc)
+            return None
+
+        quote = self.get_option_quote(ticker, expiration, option_type, strike)
+        spot = self.get_underlying_price(ticker)
+        if quote is None or spot is None:
+            return None
+
+        dte_days = (expiration - datetime.now(timezone.utc).date()).days
+        return greeks_mod.compute(
+            spot=float(spot),
+            strike=float(strike),
+            dte_days=float(dte_days),
+            option_price=float(quote.mid),
+            is_call=(option_type == "call"),
         )
 
     def _polygon_option_snapshot(self, contract_symbol: str) -> dict[str, Any] | None:
@@ -334,16 +391,30 @@ class DataService:
             return None
 
     def _fetch_vix(self, now: datetime) -> Decimal | None:
-        """Best-effort VIX fetch from Polygon. Returns None on failure."""
+        """Volatility proxy — VIXY ETF mid-quote from Alpaca.
+
+        The real VIX index requires a Polygon indices plan this account
+        doesn't have (the endpoint 403s). VIXY tracks VIX short-term
+        futures: its absolute level is NOT the VIX number, but it rises
+        and falls with market volatility, which is all this analysis-only
+        field needs. Stored in the `vix` column; the dashboard labels it
+        VIXY so the number isn't mistaken for the index.
+        """
+        from alpaca.data.enums import DataFeed
+        from alpaca.data.requests import StockLatestQuoteRequest
         try:
-            r = self._http.get("/v2/aggs/ticker/I:VIX/prev")
-            r.raise_for_status()
-            results = r.json().get("results") or []
-            if not results:
+            req = StockLatestQuoteRequest(symbol_or_symbols="VIXY", feed=DataFeed.IEX)
+            resp = self._alpaca_stocks.get_stock_latest_quote(req)
+            q = resp.get("VIXY") if isinstance(resp, dict) else None
+            if q is None:
                 return None
-            return _to_decimal(results[0].get("c"))
+            bid = Decimal(str(q.bid_price)) if getattr(q, "bid_price", 0) else None
+            ask = Decimal(str(q.ask_price)) if getattr(q, "ask_price", 0) else None
+            if bid and ask:
+                return (bid + ask) / Decimal(2)
+            return bid or ask
         except Exception as exc:  # noqa: BLE001
-            logger.warning("VIX fetch failed: %s", exc)
+            logger.warning("VIXY fetch failed: %s", exc)
             return None
 
     def _fetch_sector_changes(self, now: datetime) -> dict[str, Decimal]:
