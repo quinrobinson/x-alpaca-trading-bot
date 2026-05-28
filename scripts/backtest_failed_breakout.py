@@ -390,6 +390,11 @@ def main(argv: list[str] | None = None) -> int:
         "--vol-threshold", type=float, default=1.5,
         help="Volume-ratio split between high/low buckets (default 1.5)",
     )
+    parser.add_argument(
+        "--vol-quantile", type=float, default=None,
+        help="If set, split at this quantile of event volume ratios "
+             "(e.g. 0.80 = top 20%% / top quintile). Overrides --vol-threshold.",
+    )
     parser.add_argument("--json", action="store_true")
     args = parser.parse_args(argv)
 
@@ -446,7 +451,23 @@ def main(argv: list[str] | None = None) -> int:
         print("No failed-breakout events found.", file=sys.stderr)
         return 1
 
-    summary = summarize(all_events, vol_threshold=args.vol_threshold)
+    # Resolve the volume threshold. When --vol-quantile is set, compute
+    # the split point from the empirical distribution of event volume
+    # ratios so the "high volume" bucket is always exactly that quantile.
+    if args.vol_quantile is not None:
+        ratios = sorted(
+            e.breakout.volume_ratio for e in all_events
+            if e.breakout.volume_ratio is not None
+        )
+        if ratios:
+            idx = max(0, min(len(ratios) - 1, int(args.vol_quantile * len(ratios))))
+            vol_threshold = ratios[idx]
+        else:
+            vol_threshold = args.vol_threshold
+    else:
+        vol_threshold = args.vol_threshold
+
+    summary = summarize(all_events, vol_threshold=vol_threshold)
 
     if args.json:
         print(_events_to_json(all_events, summary, benchmark))
