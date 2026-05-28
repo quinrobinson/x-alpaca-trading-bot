@@ -990,3 +990,131 @@ def test_adopt_position_skips_when_no_matching_signal(conn: psycopg.Connection) 
     )
     assert orch._adopt_position(pos, stops_by_symbol={}) is False
     assert len(orch._open_positions) == 0
+
+
+# ---- Manual close ("Sell now" button) -----------------------------------
+
+def _open_one_position(
+    conn: psycopg.Connection,
+) -> tuple[Orchestrator, FakeAlpacaClient, list[tuple[str, dict]], int, PositionRecord]:
+    """Helper — drive the normal entry flow so we have one open position."""
+    alpaca = FakeAlpacaClient()
+    alpaca.next_fill = Decimal("2.55")
+    orch, _, broadcasts = _orch(
+        conn=conn, alpaca=alpaca, anthropic_responses=[VALID_PARSE_JSON],
+    )
+    orch._post_queue.put(_stream_event(posted_at=NOW_UTC - timedelta(seconds=30)))
+    orch.tick(NOW_UTC)
+    assert len(orch._open_positions) == 1
+    signal_id, record = next(iter(orch._open_positions.items()))
+    return orch, alpaca, broadcasts, signal_id, record
+
+
+def test_request_manual_close_returns_not_open_for_unknown_signal(
+    conn: psycopg.Connection,
+) -> None:
+    orch, _, _ = _orch(conn=conn)
+    result = orch.request_manual_close(signal_id=999_999)
+    assert result == {"ok": False, "reason": "not_open", "signal_id": 999_999}
+
+
+def test_request_manual_close_is_idempotent_on_double_tap(
+    conn: psycopg.Connection,
+) -> None:
+    """A second tap on Sell now while the first is still in flight must
+    NOT enqueue a second close — otherwise the queue drains it next tick,
+    cancels a stop that's already gone, and submits a duplicate sell."""
+    orch, _alpaca, _bc, signal_id, _record = _open_one_position(conn)
+
+    first = orch.request_manual_close(signal_id)
+    second = orch.request_manual_close(signal_id)
+
+    assert first["ok"] is True
+    assert first.get("reason") != "already_closing"
+    assert second["ok"] is True
+    assert second["reason"] == "already_closing"
+    # Only one request on the queue.
+    assert orch._manual_close_queue.qsize() == 1
+
+
+def test_manual_close_cancels_stop_and_submits_market_sell(
+    conn: psycopg.Connection,
+) -> None:
+    """After Sell now + one tick: the stop is canceled, a market sell
+    is on Alpaca, and the position is flagged closing_in_progress."""
+    orch, alpaca, broadcasts, signal_id, record = _open_one_position(conn)
+    original_stop_id = record.stop_order_id
+    assert original_stop_id is not None
+
+    orch.request_manual_close(signal_id)
+    orch.tick(NOW_UTC + timedelta(seconds=5))
+
+    # Stop was canceled.
+    assert original_stop_id in alpaca.cancellations
+
+    # A market sell was submitted on the same contract.
+    sells = [
+        o for o in alpaca.submitted
+        if o.side == "sell" and o.type == "market"
+        and o.symbol == record.contract_symbol
+    ]
+    assert len(sells) == 1
+    assert sells[0].qty == record.qty
+
+    # Position is still tracked, but flagged + linked to the sell order.
+    rec = orch._open_positions[signal_id]
+    assert rec.closing_in_progress is True
+    assert rec.manual_close_order_id == sells[0].id
+    assert rec.stop_order_id is None  # cleared after cancel
+
+    # WebSocket got the "closing" event.
+    assert any(e == "position.closing" for e, _ in broadcasts)
+
+
+def test_manual_close_books_trade_with_manual_close_reason_on_fill(
+    conn: psycopg.Connection,
+) -> None:
+    """Once the market sell fills, the next tick must record the trade
+    with exit_reason='manual_close' and remove the position."""
+    orch, alpaca, broadcasts, signal_id, record = _open_one_position(conn)
+    orch.request_manual_close(signal_id)
+    orch.tick(NOW_UTC + timedelta(seconds=5))
+
+    sell_order = alpaca.orders_by_id[record.manual_close_order_id]
+    sell_order.status = "filled"
+    sell_order.filled_avg_price = 2.75  # user got out at a profit
+    sell_order.filled_at = NOW_UTC + timedelta(seconds=8)
+
+    orch.tick(NOW_UTC + timedelta(seconds=10))
+
+    # Position cleared, trade booked, reason captured.
+    assert signal_id not in orch._open_positions
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT exit_reason, exit_price FROM trades WHERE signal_id = %s",
+            (signal_id,),
+        )
+        row = cur.fetchone()
+    assert row is not None
+    assert row[0] == "manual_close"
+    assert Decimal(row[1]) == Decimal("2.7500")
+
+    # And the dashboard gets the trade.exited event.
+    assert any(e == "trade.exited" for e, _ in broadcasts)
+
+
+def test_advance_position_skips_when_closing_in_progress(
+    conn: psycopg.Connection,
+) -> None:
+    """While a manual close is in flight, the autonomous ratchet/exit
+    logic must NOT touch the position — otherwise we race the market
+    sell with a stop modify and risk a wash-trade rejection."""
+    orch, alpaca, _bc, signal_id, record = _open_one_position(conn)
+    record.closing_in_progress = True
+
+    cancellations_before = list(alpaca.cancellations)
+    submitted_before = list(alpaca.submitted)
+    orch._advance_position(record, NOW_UTC + timedelta(seconds=5))
+    # No order activity from advance_position.
+    assert alpaca.cancellations == cancellations_before
+    assert alpaca.submitted == submitted_before

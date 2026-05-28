@@ -81,6 +81,7 @@ export default function Home() {
         break
       case 'trade.entered':
       case 'trade.stop_moved':
+      case 'position.closing':
         fetchPositions()
         break
       case 'trade.exited':

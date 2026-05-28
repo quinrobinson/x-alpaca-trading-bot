@@ -182,6 +182,14 @@ class PositionRecord:
     # tick (~5s); surfaced via /positions so the dashboard can show live
     # unrealized P&L without depending on a WebSocket push.
     last_option_mid: Decimal | None = None
+    # Manual-close flow flags. `closing_in_progress` is set when the user
+    # hits "Sell now" in the dashboard; the strategy ratchet/exit checks
+    # skip the position from then on so the autonomous logic can't race
+    # the manual sell. `manual_close_order_id` is the Alpaca order id of
+    # the market sell we submitted; `_check_manual_close_fills` polls it
+    # each tick and books the close once it fills.
+    closing_in_progress: bool = False
+    manual_close_order_id: str | None = None
 
 
 @dataclass
@@ -225,6 +233,14 @@ class _StreamEvent:
     received_at: datetime
 
 
+@dataclass(frozen=True)
+class _ManualCloseRequest:
+    """A user-initiated close. Enqueued by `request_manual_close` (called
+    from the API thread) and drained on the next tick."""
+    signal_id: int
+    requested_at: datetime
+
+
 # ---- The Orchestrator -----------------------------------------------------
 
 class Orchestrator:
@@ -266,6 +282,7 @@ class Orchestrator:
         self._notifier = notifier
 
         self._post_queue: "queue.Queue[_StreamEvent]" = queue.Queue()
+        self._manual_close_queue: "queue.Queue[_ManualCloseRequest]" = queue.Queue()
         self._open_positions: dict[int, PositionRecord] = {}
         self._state = OrchestratorState()
         self._shutdown_event = threading.Event()
@@ -337,6 +354,22 @@ class Orchestrator:
             self._drain_post_queue(now)
         except Exception:  # noqa: BLE001
             logger.exception("drain_post_queue failed; continuing")
+
+        # 1b. Drain any user-initiated manual close requests (Sell now
+        #     button in the dashboard). Runs BEFORE position advance so
+        #     positions about to be sold don't get a stop modify in the
+        #     same tick.
+        try:
+            self._drain_manual_close_queue(now)
+        except Exception:  # noqa: BLE001
+            logger.exception("drain_manual_close_queue failed; continuing")
+
+        # 1c. Poll any pending manual-close sell orders for fills and
+        #     book the close. Cheap when nothing is pending.
+        try:
+            self._check_manual_close_fills(now)
+        except Exception:  # noqa: BLE001
+            logger.exception("check_manual_close_fills failed; continuing")
 
         # 2. Mandatory 15:55 ET close — flatten everything if past.
         try:
@@ -930,6 +963,13 @@ class Orchestrator:
 
     def _advance_position(self, record: PositionRecord, now: datetime) -> None:
         """One tick of position management: fetch price, ratchet, maybe exit."""
+        # A manual close is in flight — leave the position alone. The
+        # `_check_manual_close_fills` step is polling our market sell
+        # order; ratcheting the stop or trying to modify a canceled stop
+        # here would just generate noise (or worse, a wash-trade reject).
+        if record.closing_in_progress:
+            return
+
         # Fast path: if Alpaca's stop order has already filled, the position
         # is gone server-side. Record the close, unregister, bail out before
         # we waste a quote call or try to modify a dead order. Without this,
@@ -1113,6 +1153,149 @@ class Orchestrator:
                 pnl_pct=pnl_pct,
                 exit_reason=exit_decision.reason,
                 hold_minutes=hold_minutes,
+            )
+
+    # ---- Manual close (user-initiated "Sell now") --------------------
+
+    def request_manual_close(self, signal_id: int) -> dict[str, Any]:
+        """API entry point — flag the position and enqueue the close.
+
+        Thread-safe: callable from the FastAPI request thread while the
+        orchestrator tick runs on its own thread. Holds the lock just
+        long enough to flip `closing_in_progress` (so a double-tap is a
+        no-op), then puts the request on a queue the next tick drains.
+
+        Returns a small dict the API hands back to the dashboard.
+        """
+        with self._lock:
+            record = self._open_positions.get(signal_id)
+            if record is None:
+                return {"ok": False, "reason": "not_open", "signal_id": signal_id}
+            if record.closing_in_progress:
+                # Idempotent on double-tap — same response either tap.
+                return {
+                    "ok": True, "reason": "already_closing",
+                    "signal_id": signal_id, "ticker": record.ticker,
+                    "contract_symbol": record.contract_symbol,
+                    "qty": record.qty,
+                }
+            record.closing_in_progress = True
+            ticker = record.ticker
+            contract = record.contract_symbol
+            qty = record.qty
+        self._manual_close_queue.put(
+            _ManualCloseRequest(signal_id, datetime.now(timezone.utc))
+        )
+        logger.info(
+            "manual close queued for signal_id=%s ticker=%s qty=%s",
+            signal_id, ticker, qty,
+        )
+        return {
+            "ok": True, "signal_id": signal_id, "ticker": ticker,
+            "contract_symbol": contract, "qty": qty,
+        }
+
+    def _drain_manual_close_queue(self, now: datetime) -> None:
+        while True:
+            try:
+                req = self._manual_close_queue.get_nowait()
+            except queue.Empty:
+                return
+            try:
+                self._handle_manual_close(req, now)
+            except Exception:  # noqa: BLE001
+                logger.exception(
+                    "_handle_manual_close failed for signal_id=%s", req.signal_id,
+                )
+                # Roll the flag back so the user can retry from the UI.
+                with self._lock:
+                    rec = self._open_positions.get(req.signal_id)
+                    if rec is not None:
+                        rec.closing_in_progress = False
+                        rec.manual_close_order_id = None
+                journal.insert_event(
+                    self._conn, ts=now, severity="error",
+                    category="manual_close",
+                    message="manual_close_submit_failed",
+                    context={"signal_id": req.signal_id},
+                )
+
+    def _handle_manual_close(
+        self, req: _ManualCloseRequest, now: datetime,
+    ) -> None:
+        """Cancel the existing stop, then submit a market sell.
+
+        We don't wait for the fill here — `_check_manual_close_fills` on
+        subsequent ticks polls the order and books the close. That keeps
+        the tick non-blocking even if Alpaca takes a moment.
+        """
+        record = self._open_positions.get(req.signal_id)
+        if record is None:
+            logger.info(
+                "manual close: signal_id=%s no longer open (likely already closed); skipping",
+                req.signal_id,
+            )
+            return
+
+        # Cancel the protective stop first — Alpaca rejects opposite-side
+        # orders with a wash-trade error if a stop is still live.
+        if record.stop_order_id is not None:
+            try:
+                self._executor.cancel_order(record.stop_order_id)
+            except Exception:  # noqa: BLE001
+                logger.warning(
+                    "manual close: cancel stop failed for %s (continuing to market sell)",
+                    record.contract_symbol,
+                )
+            record.stop_order_id = None
+
+        order = self._executor.submit_market_sell(record.contract_symbol, record.qty)
+        record.manual_close_order_id = order.alpaca_order_id
+
+        journal.insert_event(
+            self._conn, ts=now, severity="info",
+            category="manual_close", message="manual_close_submitted",
+            context={
+                "signal_id": req.signal_id,
+                "ticker": record.ticker,
+                "contract_symbol": record.contract_symbol,
+                "qty": record.qty,
+                "order_id": order.alpaca_order_id,
+            },
+        )
+        self._broadcast("position.closing", {
+            "signal_id": req.signal_id,
+            "ticker": record.ticker,
+        })
+
+    def _check_manual_close_fills(self, now: datetime) -> None:
+        """For every position with a pending manual close, see if the
+        market sell has filled. On fill: book the trade with
+        exit_reason='manual_close' via the shared external-close path.
+        """
+        for record in list(self._open_positions.values()):
+            if not record.closing_in_progress:
+                continue
+            if record.manual_close_order_id is None:
+                continue
+            try:
+                order = self._executor.get_order(record.manual_close_order_id)
+            except Exception:  # noqa: BLE001
+                logger.debug(
+                    "manual close poll: get_order failed for %s; will retry",
+                    record.manual_close_order_id,
+                )
+                continue
+            if not _order_is_filled(order):
+                continue
+            exit_price = Decimal(str(order.filled_avg_price))
+            closed_at = order.filled_at or now
+            self._record_external_close(
+                record,
+                exit_price=exit_price,
+                closed_at=closed_at,
+                exit_reason="manual_close",
+                now=now,
             )
 
     # ---- Reconciliation: detect Alpaca-side closes -------------------

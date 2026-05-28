@@ -74,6 +74,7 @@ export default function Details() {
         }).catch(() => {})
         break
       case 'trade.stop_moved':
+      case 'position.closing':
         fetch(apiUrl('/positions')).then(r => r.ok && r.json()).then(rows => {
           if (Array.isArray(rows)) setPositions(rows)
         }).catch(() => {})

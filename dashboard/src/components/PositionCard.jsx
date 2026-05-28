@@ -1,4 +1,5 @@
 import { fmtExpiration, fmtMoney, fmtPct, pnlColorClass } from '../util'
+import SellNowButton from './SellNowButton.jsx'
 
 /**
  * Legacy position card (used in /details). APDF dark tokens.
@@ -74,6 +75,14 @@ export default function PositionCard({ position, livePrice, snapshot }) {
         <span>
           Stop order: <span className="text-fg font-mono" style={{ fontSize: 10 }}>{position.stop_order_id ?? '—'}</span>
         </span>
+      </div>
+
+      <div className="mt-4 pt-3 border-t border-border flex justify-end">
+        <SellNowButton
+          signalId={position.signal_id}
+          ticker={position.ticker}
+          closingInProgress={position.closing_in_progress}
+        />
       </div>
     </div>
   )

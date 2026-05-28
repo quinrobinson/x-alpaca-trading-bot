@@ -1,10 +1,15 @@
-"""GET /positions — currently-open positions read from orchestrator state."""
+"""Positions endpoints.
+
+GET  /positions                — currently-open positions (orchestrator state).
+POST /positions/{id}/close     — user-initiated "Sell now" for one position.
+"""
 
 from __future__ import annotations
 
 from typing import Any
 
 from fastapi import APIRouter, Request
+from fastapi.responses import JSONResponse
 
 router = APIRouter(prefix="/positions", tags=["positions"])
 
@@ -104,7 +109,35 @@ def list_open_positions(request: Request) -> list[dict[str, Any]]:
                 str(getattr(record, "last_option_mid", None))
                 if getattr(record, "last_option_mid", None) is not None else None
             ),
+            # Flag the dashboard can read to show a "Closing…" state on
+            # the card while the manual sell is in flight. Set to True
+            # the instant the user taps "Sell now"; the row disappears
+            # from this list once the fill is booked.
+            "closing_in_progress": bool(getattr(record, "closing_in_progress", False)),
             "snapshot": snapshot_by_signal_id.get(record.signal_id),
             "source_post": posts_by_signal_id.get(record.signal_id),
         })
     return out
+
+
+@router.post("/{signal_id}/close", summary="Force-close an open position")
+def close_position(signal_id: int, request: Request) -> JSONResponse:
+    """Trigger a user-initiated market sell on one open position.
+
+    Returns 202 with the position summary when the close is accepted.
+    Returns 404 if the signal isn't currently open. Returns 503 if the
+    orchestrator isn't running. The close itself is async — the dashboard
+    polls /positions or listens on the WebSocket for `position.closing`
+    and `trade.exited` events to update the UI.
+    """
+    orch = request.app.state.orchestrator
+    if orch is None:
+        return JSONResponse(
+            {"ok": False, "reason": "orchestrator_unavailable"},
+            status_code=503,
+        )
+    result = orch.request_manual_close(signal_id)
+    if not result.get("ok"):
+        status = 404 if result.get("reason") == "not_open" else 400
+        return JSONResponse(result, status_code=status)
+    return JSONResponse(result, status_code=202)

@@ -211,6 +211,58 @@ def test_positions_returns_orchestrator_state() -> None:
         assert p["current_stop_price"] == "2.04"
         assert p["ratchet_level"] == 0
         assert p["stop_order_id"] == "fake-stop-1"
+        # New field — dashboard reads this to show "Closing…" state.
+        assert p["closing_in_progress"] is False
+
+
+# ---- POST /positions/{id}/close ------------------------------------------
+
+class _FakeOrchWithManualClose(FakeOrchestrator):
+    """Adds `request_manual_close` so the route's contract can be tested
+    without standing up a real Orchestrator."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.manual_close_calls: list[int] = []
+        self.next_response: dict | None = None
+
+    def request_manual_close(self, signal_id: int) -> dict:
+        self.manual_close_calls.append(signal_id)
+        if self.next_response is not None:
+            return self.next_response
+        return {
+            "ok": True, "signal_id": signal_id, "ticker": "AAPL",
+            "contract_symbol": "AAPL260620C00185000", "qty": 1,
+        }
+
+
+def test_close_position_returns_202_on_success() -> None:
+    orch = _FakeOrchWithManualClose()
+    app = create_app(conn=None, orchestrator=orch)
+    with TestClient(app) as client:
+        r = client.post("/positions/42/close")
+        assert r.status_code == 202
+        body = r.json()
+        assert body["ok"] is True
+        assert body["signal_id"] == 42
+        assert orch.manual_close_calls == [42]
+
+
+def test_close_position_returns_404_when_not_open() -> None:
+    orch = _FakeOrchWithManualClose()
+    orch.next_response = {"ok": False, "reason": "not_open", "signal_id": 99}
+    app = create_app(conn=None, orchestrator=orch)
+    with TestClient(app) as client:
+        r = client.post("/positions/99/close")
+        assert r.status_code == 404
+        assert r.json()["reason"] == "not_open"
+
+
+def test_close_position_returns_503_when_orchestrator_missing() -> None:
+    app = create_app(conn=None, orchestrator=None)
+    with TestClient(app) as client:
+        r = client.post("/positions/1/close")
+        assert r.status_code == 503
 
 
 # ---- /signals -------------------------------------------------------------

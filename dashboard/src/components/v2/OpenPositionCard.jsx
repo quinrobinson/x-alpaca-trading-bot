@@ -1,5 +1,6 @@
 import { useState } from 'react'
 import { fmtExpiration, fmtMoney, fmtPct, fmtRelative, pnlColorClass } from '../../util'
+import SellNowButton from '../SellNowButton.jsx'
 
 /**
  * Open position card — APDF dark.
@@ -87,9 +88,18 @@ export default function OpenPositionCard({ position, livePrice, snapshot }) {
         </div>
       )}
 
+      {/* Manual close — "Sell now" with inline confirm */}
+      <div className="mt-4 flex justify-end">
+        <SellNowButton
+          signalId={position.signal_id}
+          ticker={position.ticker}
+          closingInProgress={position.closing_in_progress}
+        />
+      </div>
+
       <button
         onClick={() => setExpanded((e) => !e)}
-        className="mt-4 w-full text-xs text-fg-dim hover:text-fg flex items-center justify-center gap-1.5 transition-colors py-1"
+        className="mt-3 w-full text-xs text-fg-dim hover:text-fg flex items-center justify-center gap-1.5 transition-colors py-1"
       >
         <span
           className="font-mono uppercase tracking-wider"
