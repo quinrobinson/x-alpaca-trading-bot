@@ -1103,6 +1103,48 @@ def test_manual_close_books_trade_with_manual_close_reason_on_fill(
     assert any(e == "trade.exited" for e, _ in broadcasts)
 
 
+def test_reconcile_defers_to_manual_close_when_in_flight(
+    conn: psycopg.Connection,
+) -> None:
+    """Regression for the SWKS bug: the same tick can submit a manual close
+    AND fire reconciliation. Without the defer, reconcile saw the position
+    missing on Alpaca and booked it at entry price (exit_reason='external
+    _close', P&L=0). With the defer, reconcile finds the manual close
+    order, sees it filled, and records the REAL fill price with
+    exit_reason='manual_close'.
+    """
+    orch, alpaca, broadcasts, signal_id, record = _open_one_position(conn)
+    # Bump tick_count so the next tick lands on a reconcile cadence.
+    orch._state.tick_count = 5  # next tick increments to 6 -> 6 % 6 == 0
+
+    # Simulate Alpaca paper filling the market sell instantly at $2.75
+    # — we pre-arm the FakeAlpacaClient so submit_market_sell returns a
+    # filled order, AND pre-empt Alpaca's position list so reconcile
+    # sees the position as a ghost.
+    alpaca.next_fill = Decimal("2.75")
+    alpaca.positions = []  # Alpaca already has no position
+
+    orch.request_manual_close(signal_id)
+    # One tick: drains the queue (submits sell), check_manual_close_fills
+    # sees it filled, books the trade. Reconcile also runs in this same
+    # tick because tick_count hits a multiple of 6 — and that is exactly
+    # the race that caused the SWKS bug.
+    orch.tick(NOW_UTC + timedelta(seconds=5))
+
+    assert signal_id not in orch._open_positions
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT exit_reason, exit_price FROM trades WHERE signal_id = %s",
+            (signal_id,),
+        )
+        row = cur.fetchone()
+    assert row is not None
+    # Must be the manual close reason at the real fill price — not
+    # external_close at entry_price (the old buggy behavior).
+    assert row[0] == "manual_close"
+    assert Decimal(row[1]) == Decimal("2.7500")
+
+
 def test_advance_position_skips_when_closing_in_progress(
     conn: psycopg.Connection,
 ) -> None:

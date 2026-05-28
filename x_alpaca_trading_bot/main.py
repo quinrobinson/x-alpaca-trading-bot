@@ -1458,7 +1458,38 @@ class Orchestrator:
             return
 
         for signal_id, record in ghosts:
-            # Try to find the actual close fill for accurate exit data.
+            # ---- Manual close in flight ------------------------------
+            # A user "Sell now" can land in the same tick as reconcile.
+            # The drain step has already submitted the market sell and
+            # nulled stop_order_id, so the old code below would think
+            # this was an untracked external close and book it at
+            # entry_price. Instead: look up the manual close order. If
+            # it's filled, record the real fill price with the right
+            # reason. If it's still pending, skip — the next tick's
+            # _check_manual_close_fills will catch it.
+            if record.closing_in_progress and record.manual_close_order_id is not None:
+                try:
+                    manual_order = self._executor.get_order(
+                        record.manual_close_order_id
+                    )
+                except Exception:  # noqa: BLE001
+                    manual_order = None
+                if _order_is_filled(manual_order):
+                    self._record_external_close(
+                        record,
+                        exit_price=Decimal(str(manual_order.filled_avg_price)),
+                        closed_at=manual_order.filled_at or now,
+                        exit_reason="manual_close",
+                        now=now,
+                    )
+                else:
+                    logger.info(
+                        "reconcile: deferring signal_id=%s — manual close in flight (order=%s)",
+                        signal_id, record.manual_close_order_id,
+                    )
+                continue
+
+            # ---- Existing logic for organic ghosts -------------------
             exit_price = record.entry_price  # fallback
             closed_at = now
             exit_reason = "external_close"
