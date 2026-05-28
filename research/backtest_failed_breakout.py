@@ -41,9 +41,9 @@ tell put edge apart from just "stocks drift down at lunch."
 
 Usage
 -----
-    python scripts/backtest_failed_breakout.py
-    python scripts/backtest_failed_breakout.py --symbols AAPL,NVDA --days 90
-    python scripts/backtest_failed_breakout.py --breakout-cutoff 11 --failure-window 30
+    python research/backtest_failed_breakout.py
+    python research/backtest_failed_breakout.py --symbols AAPL,NVDA --days 90
+    python research/backtest_failed_breakout.py --breakout-cutoff 11 --failure-window 30
 """
 
 from __future__ import annotations

@@ -7,9 +7,9 @@ from datetime import datetime, time
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
-# Make scripts/ importable in tests.
-SCRIPTS_DIR = Path(__file__).resolve().parent.parent / "scripts"
-sys.path.insert(0, str(SCRIPTS_DIR))
+# Make research/ importable in tests.
+RESEARCH_DIR = Path(__file__).resolve().parent.parent / "research"
+sys.path.insert(0, str(RESEARCH_DIR))
 
 import backtest_momentum as bm  # noqa: E402
 import backtest_failed_breakout as fb  # noqa: E402

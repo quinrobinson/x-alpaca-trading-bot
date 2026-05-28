@@ -68,7 +68,11 @@ x_alpaca_trading_bot/
 ├── dashboard/                 # React frontend
 ├── api/                       # FastAPI + WebSocket backend
 ├── tests/                     # Unit tests
-├── scripts/                   # Backtest and utility scripts
+├── scripts/                   # Operational scripts (smoke tests, one-off
+│                              # backfills, the strategy-replay CLI)
+├── research/                  # Standalone signal research. READ-ONLY
+│                              # relative to the live bot — see
+│                              # research/README.md
 ├── deploy/                    # systemd units + install script
 ├── X_ALPACA_OPTIONS_HANDOFF.md
 ├── CLAUDE.md                  # This file
@@ -108,6 +112,12 @@ These rules apply in every session without exception:
 7. **Phase gates are hard stops.** If a phase acceptance gate fails, stop and report — do not tune parameters to force a pass.
 8. **No "TODO: handle later" in critical paths.** Raise `NotImplementedError` so startup fails loudly.
 9. **Commit at every phase boundary** with tag `phase-N-complete`.
+10. **`research/` is read-only relative to the live bot.** Scripts in
+    `research/` never import from `x_alpaca_trading_bot/`, never write
+    to production tables, and never call Alpaca trading endpoints. The
+    dependency arrow points one way: production never depends on
+    research. Moving a research signal into the bot is an explicit,
+    planned change — see `research/README.md`.
 
 ---
 

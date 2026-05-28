@@ -36,9 +36,9 @@ ALPACA_SECRET_KEY in the environment (or a .env file in the repo root).
 
 Usage
 -----
-    python scripts/backtest_momentum.py
-    python scripts/backtest_momentum.py --symbols AAPL,NVDA,AMD --days 90
-    python scripts/backtest_momentum.py --cutoff 14 --vol-threshold 2.0 --json
+    python research/backtest_momentum.py
+    python research/backtest_momentum.py --symbols AAPL,NVDA,AMD --days 90
+    python research/backtest_momentum.py --cutoff 14 --vol-threshold 2.0 --json
 """
 
 from __future__ import annotations
