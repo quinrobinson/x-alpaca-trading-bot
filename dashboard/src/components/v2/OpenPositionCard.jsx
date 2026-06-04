@@ -1,14 +1,23 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { fmtExpiration, fmtMoney, fmtPct, fmtRelative, pnlColorClass } from '../../util'
+import { apiUrl } from '../../config.js'
 import SellNowButton from '../SellNowButton.jsx'
+import MiniCandlestickChart from './MiniCandlestickChart.jsx'
 
 /**
  * Open position card — APDF dark.
  *   #1A1A1A card, 1px border, 12px radius, mono numbers,
  *   warm-amber outline highlight to mark "in trade".
  */
+const CHART_POLL_MS = 30_000
+
 export default function OpenPositionCard({ position, livePrice, snapshot }) {
   const [expanded, setExpanded] = useState(false)
+  // Mini-chart state — timeframe toggle (1m/5m/15m) and bars from the new
+  // /market/bars endpoint. Refreshes every 30s while the card is mounted.
+  const [chartTimeframe, setChartTimeframe] = useState('5m')
+  const [bars, setBars] = useState([])
+  const [barsLoading, setBarsLoading] = useState(false)
 
   const entry = Number(position.entry_price)
   const current = livePrice ?? entry
@@ -31,6 +40,38 @@ export default function OpenPositionCard({ position, livePrice, snapshot }) {
     : position.ratchet_level === 2
       ? `tight trail • stop ${stopGainPct >= 0 ? '+' : ''}${(stopGainPct * 100).toFixed(1)}%`
       : `trailing • stop ${stopGainPct >= 0 ? '+' : ''}${(stopGainPct * 100).toFixed(1)}%`
+
+  // ---- Underlying bars for the mini chart -----------------------------
+
+  useEffect(() => {
+    let cancelled = false
+
+    async function load() {
+      setBarsLoading(true)
+      try {
+        const r = await fetch(
+          apiUrl(
+            `/market/bars?ticker=${encodeURIComponent(position.ticker)}` +
+              `&timeframe=${chartTimeframe}&limit=60`,
+          ),
+        )
+        if (!r.ok) throw new Error(`HTTP ${r.status}`)
+        const json = await r.json()
+        if (!cancelled && Array.isArray(json)) setBars(json)
+      } catch {
+        // Swallow — chart falls back to "No bar data".
+      } finally {
+        if (!cancelled) setBarsLoading(false)
+      }
+    }
+
+    load()
+    const id = setInterval(load, CHART_POLL_MS)
+    return () => {
+      cancelled = true
+      clearInterval(id)
+    }
+  }, [position.ticker, chartTimeframe])
 
   return (
     <article
@@ -73,6 +114,42 @@ export default function OpenPositionCard({ position, livePrice, snapshot }) {
             className={`absolute -top-1 w-2.5 h-4 rounded ${pnl >= 0 ? 'bg-positive' : 'bg-negative'}`}
             style={{ left: `calc(${markerPct}% - 5px)` }}
           />
+        </div>
+      </div>
+
+      {/* Underlying candle chart — helps decide whether to manually close */}
+      <div className="mt-4">
+        <div className="flex items-center justify-between mb-2">
+          <div className="mono-label" style={{ fontSize: 10 }}>
+            {position.ticker} underlying
+          </div>
+          <TimeframeToggle value={chartTimeframe} onChange={setChartTimeframe} />
+        </div>
+        <MiniCandlestickChart
+          bars={bars}
+          entryPrice={entry}
+          stopPrice={stop}
+          height={140}
+          loading={barsLoading}
+        />
+        {/* Legend: which line is which */}
+        <div className="mt-2 flex items-center justify-end gap-4 text-fg-dim" style={{ fontSize: 10 }}>
+          <span className="inline-flex items-center gap-1.5">
+            <span
+              aria-hidden
+              className="inline-block"
+              style={{ width: 12, height: 0, borderTop: '1px dashed var(--fg-dim)' }}
+            />
+            entry
+          </span>
+          <span className="inline-flex items-center gap-1.5">
+            <span
+              aria-hidden
+              className="inline-block"
+              style={{ width: 12, height: 0, borderTop: '1.5px solid var(--accent-amber, #f59e0b)' }}
+            />
+            stop
+          </span>
         </div>
       </div>
 
@@ -156,6 +233,40 @@ function Stat({ label, value, negative }) {
       <div className={`text-sm font-mono mt-0.5 ${isNeg ? 'text-negative' : 'text-fg'}`}>
         {value === null || value === undefined ? '—' : value}
       </div>
+    </div>
+  )
+}
+
+const TIMEFRAMES = ['1m', '5m', '15m']
+
+function TimeframeToggle({ value, onChange }) {
+  return (
+    <div
+      className="inline-flex rounded overflow-hidden"
+      style={{ border: '1px solid var(--border)' }}
+      role="group"
+      aria-label="Chart timeframe"
+    >
+      {TIMEFRAMES.map((tf) => {
+        const active = tf === value
+        return (
+          <button
+            key={tf}
+            type="button"
+            onClick={() => onChange(tf)}
+            className="px-2 py-0.5 font-mono uppercase transition-colors"
+            style={{
+              fontSize: 10,
+              letterSpacing: '0.16em',
+              background: active ? 'var(--elevated)' : 'transparent',
+              color: active ? 'var(--fg)' : 'var(--fg-dim)',
+            }}
+            aria-pressed={active}
+          >
+            {tf}
+          </button>
+        )
+      })}
     </div>
   )
 }

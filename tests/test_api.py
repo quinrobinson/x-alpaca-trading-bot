@@ -265,6 +265,100 @@ def test_close_position_returns_503_when_orchestrator_missing() -> None:
         assert r.status_code == 503
 
 
+# ---- /market/bars (mini candlestick chart on open positions) -------------
+
+class _FakeDataService:
+    """Stub for the /market/bars endpoint — records the last call and
+    returns a canned list of OHLCBar values."""
+
+    def __init__(self) -> None:
+        self.bars: list = []
+        self.calls: list[dict] = []
+        self.should_raise: Exception | None = None
+
+    def get_underlying_bars(
+        self,
+        ticker: str,
+        now: datetime,
+        *,
+        timeframe_minutes: int,
+        limit: int = 60,
+    ):
+        self.calls.append({
+            "ticker": ticker,
+            "timeframe_minutes": timeframe_minutes,
+            "limit": limit,
+        })
+        if self.should_raise is not None:
+            raise self.should_raise
+        return self.bars
+
+
+def test_market_bars_returns_serialized_ohlc() -> None:
+    from x_alpaca_trading_bot.data_service import OHLCBar
+    ds = _FakeDataService()
+    ds.bars = [
+        OHLCBar(
+            ts=datetime(2026, 6, 4, 13, 30, tzinfo=timezone.utc),
+            open=Decimal("100.50"), high=Decimal("101.25"),
+            low=Decimal("100.20"), close=Decimal("101.00"),
+            volume=12345,
+        ),
+        OHLCBar(
+            ts=datetime(2026, 6, 4, 13, 35, tzinfo=timezone.utc),
+            open=Decimal("101.00"), high=Decimal("101.50"),
+            low=Decimal("100.75"), close=Decimal("101.20"),
+            volume=22222,
+        ),
+    ]
+    app = create_app(conn=None, orchestrator=FakeOrchestrator(), data_service=ds)
+    with TestClient(app) as client:
+        r = client.get("/market/bars?ticker=aapl&timeframe=5m&limit=2")
+        assert r.status_code == 200
+        body = r.json()
+        assert len(body) == 2
+        assert body[0] == {
+            "ts": "2026-06-04T13:30:00+00:00",
+            "open": "100.50", "high": "101.25",
+            "low": "100.20", "close": "101.00",
+            "volume": 12345,
+        }
+        # Ticker is uppercased and timeframe is mapped to minutes before
+        # reaching the data_service.
+        assert ds.calls[0]["ticker"] == "AAPL"
+        assert ds.calls[0]["timeframe_minutes"] == 5
+        assert ds.calls[0]["limit"] == 2
+
+
+def test_market_bars_rejects_unknown_timeframe() -> None:
+    ds = _FakeDataService()
+    app = create_app(conn=None, orchestrator=FakeOrchestrator(), data_service=ds)
+    with TestClient(app) as client:
+        r = client.get("/market/bars?ticker=AAPL&timeframe=99m")
+        assert r.status_code == 400
+        assert ds.calls == []  # never reached the data_service
+
+
+def test_market_bars_returns_503_without_data_service() -> None:
+    app = create_app(conn=None, orchestrator=FakeOrchestrator(), data_service=None)
+    with TestClient(app) as client:
+        r = client.get("/market/bars?ticker=AAPL&timeframe=5m")
+        assert r.status_code == 503
+
+
+def test_market_bars_caps_limit() -> None:
+    """Query validation rejects out-of-bounds limit values."""
+    ds = _FakeDataService()
+    app = create_app(conn=None, orchestrator=FakeOrchestrator(), data_service=ds)
+    with TestClient(app) as client:
+        # Too big — must reject before calling the data_service.
+        r = client.get("/market/bars?ticker=AAPL&timeframe=5m&limit=500")
+        assert r.status_code == 422
+        # Too small.
+        r = client.get("/market/bars?ticker=AAPL&timeframe=5m&limit=0")
+        assert r.status_code == 422
+
+
 # ---- /signals -------------------------------------------------------------
 
 def test_signals_returns_recent_history(conn: psycopg.Connection) -> None:

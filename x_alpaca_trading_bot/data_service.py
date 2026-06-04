@@ -83,6 +83,18 @@ class MarketContext:
     sector_etf_trend: dict[str, Decimal]   # ticker -> day-change pct (e.g. 0.0123 == +1.23%)
 
 
+@dataclass(frozen=True)
+class OHLCBar:
+    """One OHLCV bar for an underlying ticker. Decimal prices, int volume."""
+
+    ts: datetime          # timezone-aware (UTC)
+    open: Decimal
+    high: Decimal
+    low: Decimal
+    close: Decimal
+    volume: int
+
+
 # ---- Protocol so consumers can mock --------------------------------------
 
 class MarketDataProvider(Protocol):
@@ -370,6 +382,48 @@ class DataService:
         except Exception as exc:  # noqa: BLE001
             logger.warning("alpaca bars %s failed: %s", ticker, exc)
             return pd.DataFrame()
+
+    def get_underlying_bars(
+        self,
+        ticker: str,
+        now: datetime,
+        *,
+        timeframe_minutes: int,
+        limit: int = 60,
+    ) -> list[OHLCBar]:
+        """Recent OHLC bars for one underlying ticker — feeds the chart on
+        the dashboard's open position card.
+
+        Fetches with a generous lookback window so weekend/holiday gaps
+        don't shrink the result below `limit`. Returns at most `limit`
+        bars, oldest first. IEX feed, real-time but lower volume than SIP.
+        """
+        # 3x the nominal window — gives us enough cushion to clear an
+        # overnight or weekend gap and still return `limit` bars during
+        # a normal trading session.
+        lookback = max(timeframe_minutes * limit * 3, 60 * 24)
+        df = self._fetch_alpaca_bars(
+            ticker, now,
+            timeframe_minutes=timeframe_minutes,
+            lookback_minutes=lookback,
+        )
+        if df is None or df.empty:
+            return []
+        tail = df.tail(limit)
+        out: list[OHLCBar] = []
+        for ts, row in tail.iterrows():
+            # Alpaca returns tz-aware Timestamps; normalize to a plain
+            # datetime so consumers don't have to know about pandas.
+            py_ts = ts.to_pydatetime() if hasattr(ts, "to_pydatetime") else ts
+            out.append(OHLCBar(
+                ts=py_ts,
+                open=Decimal(str(row["open"])),
+                high=Decimal(str(row["high"])),
+                low=Decimal(str(row["low"])),
+                close=Decimal(str(row["close"])),
+                volume=int(row.get("volume", 0)),
+            ))
+        return out
 
     def get_underlying_price(self, ticker: str) -> Decimal | None:
         """Latest mid-quote for the underlying stock. None on failure."""
