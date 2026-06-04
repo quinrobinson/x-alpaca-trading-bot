@@ -104,12 +104,14 @@ def test_dte_close_fires(tmp_path: Path) -> None:
 
 
 def test_time_stop_1555_fires(tmp_path: Path) -> None:
+    """The 15:55 ET rule is DTE-gated as of 2026-06: only flattens contracts
+    with DTE <= 3. Use a near-expiry contract so the rule actually fires."""
     csv_path = tmp_path / "time.csv"
     entry = Decimal("2.00")
-    expiry = date(2026, 6, 20)
     # 12:00 ET start, then a tick at 15:55 ET
     t0 = datetime(2026, 5, 12, 12, 0, tzinfo=ET).astimezone(timezone.utc)
     t1 = datetime(2026, 5, 12, 15, 55, tzinfo=ET).astimezone(timezone.utc)
+    expiry = t0.astimezone(ET).date() + timedelta(days=2)  # DTE=2, within threshold
     _write_csv(csv_path, [
         _row("t1", entry, expiry, t0, entry),
         _row("t1", entry, expiry, t0 + timedelta(minutes=10), Decimal("2.05")),

@@ -40,8 +40,11 @@ backward compat:
 
 Hard exits (spec §1.4), checked in priority order on each tick:
   1. stop_loss          — current_price <= stop_price (capital protection first)
-  2. time_stop_1555     — at or past 15:55 ET (mandatory daily flatten)
-  3. dte_close          — DTE <= dte_threshold_days (default 1)
+  2. time_stop_1555     — at or past 15:55 ET AND DTE <= eod_dte_threshold_days
+                          (default 3). Positions with longer DTE hold
+                          overnight under the trailing stop.
+  3. dte_close          — DTE <= dte_threshold_days (default 1). Always-on
+                          tick-time guard against expiry overnight.
   4. stale_no_movement  — open >= 4h and price near entry
 """
 
@@ -77,7 +80,8 @@ TIGHT_TRAIL_WIDTH: Decimal = Decimal("0.03")         # aggressive: 3% behind pea
 
 # Default tunables. Caller can override.
 DEFAULT_MARKET_CLOSE = time(15, 55)              # ET wall-clock
-DEFAULT_DTE_THRESHOLD_DAYS = 1
+DEFAULT_DTE_THRESHOLD_DAYS = 1                   # always-close-at-any-tick threshold
+DEFAULT_EOD_DTE_THRESHOLD_DAYS = 3               # at-15:55 close threshold (DTE-gated EOD flatten)
 DEFAULT_STALE_WINDOW = timedelta(hours=4)
 DEFAULT_STALE_MOVEMENT_PCT = Decimal("0.02")     # |Δprice|/entry below which we call it "no movement"
 
@@ -159,6 +163,7 @@ def evaluate(
     *,
     market_close_time: time = DEFAULT_MARKET_CLOSE,
     dte_threshold_days: int = DEFAULT_DTE_THRESHOLD_DAYS,
+    eod_dte_threshold_days: int = DEFAULT_EOD_DTE_THRESHOLD_DAYS,
     stale_window: timedelta = DEFAULT_STALE_WINDOW,
     stale_movement_pct: Decimal = DEFAULT_STALE_MOVEMENT_PCT,
 ) -> EvaluationResult:
@@ -226,16 +231,23 @@ def evaluate(
             exit=ExitDecision(reason="stop_loss", exit_price=current_price, triggered_at=now),
         )
 
-    # 2b. 15:55 ET mandatory close.
-    if _is_at_or_past_close(now, market_close_time):
-        return EvaluationResult(
-            position=new_position,
-            exit=ExitDecision(reason="time_stop_1555", exit_price=current_price, triggered_at=now),
-        )
-
-    # 2c. DTE close.
+    # 2b. 15:55 ET close — DTE-gated. Only flatten if the contract is near
+    # expiration (DTE <= eod_dte_threshold_days). Positions with longer time
+    # to expiration are held overnight, protected by the trailing stop.
+    # Rationale: theta + gap risk are concentrated in the last few days;
+    # for contracts with weeks left, the trailing stop is a better risk
+    # tool than a blanket EOD flatten that caps every winner at the close.
     et_today = now.astimezone(ET).date()
     days_to_exp = (position.expiration - et_today).days
+    if _is_at_or_past_close(now, market_close_time):
+        if days_to_exp <= eod_dte_threshold_days:
+            return EvaluationResult(
+                position=new_position,
+                exit=ExitDecision(reason="time_stop_1555", exit_price=current_price, triggered_at=now),
+            )
+        # else: fall through, the trailing stop manages overnight risk
+
+    # 2c. DTE close — always-on, fires any tick when too close to expiration.
     if days_to_exp <= dte_threshold_days:
         return EvaluationResult(
             position=new_position,

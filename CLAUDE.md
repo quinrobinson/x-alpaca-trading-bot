@@ -152,8 +152,11 @@ under the old table. See strategy.py module docstring for full history.
 
 **Hard exits:**
 - Stop loss hit → immediate market order
-- 15:55 ET → flatten everything
-- DTE = 1 → close regardless of P&L
+- 15:55 ET → **flatten only if DTE ≤ 3**. Contracts with more time hold
+  overnight, managed by the trailing stop. (Changed 2026-06; previously
+  flattened unconditionally.)
+- DTE = 1 → close regardless of P&L (always-on; protects against
+  expiry overnight even for positions we hold past 15:55)
 - >4 hours with no movement → evaluate and close
 
 **Kill switches:**

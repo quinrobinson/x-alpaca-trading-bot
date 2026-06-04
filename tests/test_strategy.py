@@ -272,27 +272,73 @@ def test_inod_scenario_continuous_trail_protects_the_trade() -> None:
     assert result.exit.exit_price == Decimal("1.86")
 
 
-# ---- Time-based: 15:55 ET --------------------------------------------------
+# ---- Time-based: 15:55 ET (DTE-gated) -------------------------------------
 
-def test_at_1555_et_exits_with_time_stop() -> None:
-    p = _new_position()
+# Default DEFAULT_EOD_DTE_THRESHOLD_DAYS = 3 — at 15:55, only flatten
+# contracts with <= 3 days to expiration. Longer-DTE positions hold
+# overnight, protected by the trailing stop.
+
+def test_at_1555_et_with_near_expiry_flattens() -> None:
+    """DTE = 3 contract at 15:55 → flatten (time_stop_1555)."""
     at_1555 = datetime(2026, 5, 12, 15, 55, tzinfo=ET)
+    exp_3_days = at_1555.date() + timedelta(days=3)
+    p = _new_position(expiration=exp_3_days)
     result = evaluate(p, Decimal("2.70"), at_1555.astimezone(timezone.utc))
     assert result.exit is not None
     assert result.exit.reason == "time_stop_1555"
 
 
-def test_after_1555_et_exits_with_time_stop() -> None:
-    p = _new_position()
+def test_after_1555_et_with_near_expiry_flattens() -> None:
     at_1601 = datetime(2026, 5, 12, 16, 1, tzinfo=ET)
+    exp_2_days = at_1601.date() + timedelta(days=2)
+    p = _new_position(expiration=exp_2_days)
     result = evaluate(p, Decimal("2.70"), at_1601.astimezone(timezone.utc))
     assert result.exit is not None
     assert result.exit.reason == "time_stop_1555"
 
 
-def test_before_1555_et_no_time_stop() -> None:
-    p = _new_position()
+def test_at_1555_et_with_far_dte_holds_overnight() -> None:
+    """DTE = 10 contract at 15:55 → NO exit. Position holds overnight,
+    managed by the trailing stop. This is the user-approved 2026-06
+    change to let real winners run instead of capping at close."""
+    at_1555 = datetime(2026, 5, 12, 15, 55, tzinfo=ET)
+    exp_10_days = at_1555.date() + timedelta(days=10)
+    p = _new_position(expiration=exp_10_days)
+    result = evaluate(p, Decimal("2.70"), at_1555.astimezone(timezone.utc))
+    assert result.exit is None
+
+
+def test_at_1555_et_with_dte_4_holds() -> None:
+    """Boundary check: DTE=4 (one beyond the threshold) holds overnight."""
+    at_1555 = datetime(2026, 5, 12, 15, 55, tzinfo=ET)
+    exp_4_days = at_1555.date() + timedelta(days=4)
+    p = _new_position(expiration=exp_4_days)
+    result = evaluate(p, Decimal("2.70"), at_1555.astimezone(timezone.utc))
+    assert result.exit is None
+
+
+def test_eod_dte_threshold_configurable() -> None:
+    """Caller can override the EOD DTE threshold per-tick."""
+    at_1555 = datetime(2026, 5, 12, 15, 55, tzinfo=ET)
+    exp_5_days = at_1555.date() + timedelta(days=5)
+    p = _new_position(expiration=exp_5_days)
+    # Default threshold = 3 → no exit
+    assert evaluate(p, Decimal("2.70"), at_1555.astimezone(timezone.utc)).exit is None
+    # Bump threshold to 7 → DTE=5 now flattens at 15:55
+    result = evaluate(
+        p, Decimal("2.70"), at_1555.astimezone(timezone.utc),
+        eod_dte_threshold_days=7,
+    )
+    assert result.exit is not None
+    assert result.exit.reason == "time_stop_1555"
+
+
+def test_before_1555_et_no_time_stop_regardless_of_dte() -> None:
+    """The 15:55 rule only fires AT or past 15:55. At 15:54 it's silent
+    even on a same-day expiry."""
     at_1554 = datetime(2026, 5, 12, 15, 54, tzinfo=ET)
+    same_day = at_1554.date()
+    p = _new_position(expiration=same_day + timedelta(days=2))
     result = evaluate(p, Decimal("2.70"), at_1554.astimezone(timezone.utc))
     assert result.exit is None
 
@@ -366,10 +412,14 @@ def test_stale_with_movement_does_not_exit() -> None:
 # ---- Priority ordering ----------------------------------------------------
 
 def test_stop_loss_wins_over_time_stop_at_1555() -> None:
-    """Stop loss takes priority even if 15:55 ET also fires."""
-    p = _new_position()
+    """Stop loss takes priority even if 15:55 ET also fires.
+    Uses a near-expiry contract so the time_stop rule is actually live;
+    otherwise (DTE > 3) the time stop wouldn't fire under the new logic
+    and the test wouldn't be testing priority at all."""
     at_1555 = datetime(2026, 5, 12, 15, 55, tzinfo=ET)
-    # current price below stop AND at close time
+    exp_2_days = at_1555.date() + timedelta(days=2)
+    p = _new_position(expiration=exp_2_days)
+    # current price below stop AND at close time AND near expiry
     result = evaluate(p, Decimal("1.95"), at_1555.astimezone(timezone.utc))
     assert result.exit is not None
     assert result.exit.reason == "stop_loss"
