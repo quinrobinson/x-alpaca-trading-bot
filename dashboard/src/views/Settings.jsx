@@ -1,6 +1,4 @@
 import { useCallback, useEffect, useState } from 'react'
-import { Link } from 'react-router-dom'
-import BrandMark from '../components/v2/BrandMark.jsx'
 import ToggleSwitch from '../components/v2/ToggleSwitch.jsx'
 import { apiUrl } from '../config.js'
 
@@ -82,37 +80,12 @@ export default function Settings() {
     }
   }
 
+  // AppShell already provides the sticky top header, the max-width
+  // wrapper, the bottom nav, and the main-content padding. This view
+  // just renders the settings form into the existing <Outlet />.
   return (
-    <div className="min-h-screen flex flex-col max-w-3xl mx-auto">
-      <header className="sticky top-0 z-10 bg-bg/90 backdrop-blur border-b border-border">
-        <div className="px-4 lg:px-6 pt-4 pb-2 flex items-center gap-2.5">
-          <BrandMark size={28} />
-          <span
-            className="font-display font-semibold text-fg tracking-tight truncate"
-            style={{ fontSize: 15, letterSpacing: '-0.01em' }}
-          >
-            x-alpaca-trading-bot
-          </span>
-          <span
-            className="mono-label ml-auto shrink-0"
-            style={{ fontSize: 10, letterSpacing: '0.18em' }}
-          >
-            settings
-          </span>
-        </div>
-        <div className="px-4 lg:px-6 pb-3.5">
-          <Link
-            to="/"
-            className="text-xs text-fg-dim hover:text-fg transition-colors font-mono uppercase tracking-wider"
-            style={{ fontSize: 10, letterSpacing: '0.16em' }}
-          >
-            ← back to dashboard
-          </Link>
-        </div>
-      </header>
-
-      <main className="flex-1 px-4 lg:px-6 py-6">
-        {loadError && (
+    <>
+      {loadError && (
           <div
             className="rounded-card p-4 mb-4 text-sm text-negative"
             style={{ background: 'var(--card)', border: '1px solid rgba(239,68,68,0.45)' }}
@@ -193,8 +166,7 @@ export default function Settings() {
             </div>
           </form>
         )}
-      </main>
-    </div>
+    </>
   )
 }
 
