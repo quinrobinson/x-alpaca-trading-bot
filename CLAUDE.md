@@ -138,11 +138,17 @@ These rules apply in every session without exception:
 
 **Stop loss:** 20% below fill price (configurable via env)
 
-**Trailing stop ratchet:**
-- +10% gain → stop to breakeven
-- +20% gain → stop to +10%
-- +25% gain → stop to +20%
-- +40%+ gain → stop to +30%, tighten aggressively
+**Trailing stop (continuous peak-trail, 2026-06):**
+- Below +5% peak gain: initial stop holds at -20% from entry
+- +5%+ peak gain: trail activates at `peak × 0.95` (clamped to breakeven floor)
+- +40%+ peak gain: trail tightens to `peak × 0.97` (aggressive regime)
+- Stop only moves up; never down. Peak only moves up; never down.
+
+Replaces the prior discrete table (+20/+30/+40/+60). Rationale: small-cap
+tweet pumps frequently peak in the +5% to +15% band and decay before
+crossing the old +20% activation, leaving the position unprotected. INOD
+(2026-06-04) peaked at +8.89% and got flattened at -11.1% by 15:55 ET
+under the old table. See strategy.py module docstring for full history.
 
 **Hard exits:**
 - Stop loss hit → immediate market order

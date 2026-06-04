@@ -11,25 +11,32 @@ Design constraints from X_ALPACA_OPTIONS_HANDOFF.md §2.3 and §6:
   - All money math uses `Decimal`. Never float.
   - Timezone-aware datetimes everywhere.
 
-Trailing stop ratchet (revised for options microstructure):
+Trailing stop (continuous peak-trailing, activated at +5% gain):
 
-    Position Gain | Stop Loss Action
-    --------------+------------------
-        +20%      | Move stop to breakeven
-        +30%      | Move stop to +10%
-        +40%      | Move stop to +20%
-        +60%+     | Tighten to +30%, reassess
+    Peak Gain  | Stop Action
+    -----------+--------------------------------------------
+       < +5%   | initial stop (initial_stop_pct below entry)
+      >= +5%   | trail 5% behind running peak, never below breakeven
+      >= +40%  | trail tightens to 3% behind running peak
 
-The stop only moves up. Once a ratchet level is reached, the position's
-`ratchet_level` is recorded and the stop is raised to the new floor.
+The stop is a continuous function of the position's PEAK price, not a
+discrete ratchet at fixed gain thresholds. Once peak gain crosses the
+activation threshold (+5%), the stop locks in as `peak * (1 - width)`
+and ratchets up tick-by-tick as the peak rises. It never moves down.
 
-Why the higher triggers vs the original spec (+10/+20/+25/+40):
-Options have wide bid/ask spreads. The original first ratchet (+10% →
-breakeven) was triggered by normal intraday noise, then when the price
-mean-reverted, the subsequent _close_position market sell took the bid,
-turning a "protected breakeven" into a real -10% to -12% exit. Doubling
-the first trigger to +20% gives the trade room to confirm a real trend
-before we lock anything in.
+Why continuous instead of a discrete table:
+The previous implementation used (+20%/+30%/+40%/+60%) discrete steps
+with the stop sitting at the last level between thresholds. INOD
+(2026-06-04) peaked at +8.89% mid, never crossed the +20% activation,
+never ratcheted, and the 15:55 ET flatten took it at -11% on the bid.
+With continuous trail at 5%, that peak would have moved the stop to
+~+3.9%, exiting on pullback instead of holding through the decay.
+
+ratchet_level is preserved as an integer state for journal/dashboard
+backward compat:
+    0 = trail not active (initial stop in effect)
+    1 = trail active (5% behind peak)
+    2 = aggressive trail (3% behind peak)
 
 Hard exits (spec §1.4), checked in priority order on each tick:
   1. stop_loss          — current_price <= stop_price (capital protection first)
@@ -55,22 +62,18 @@ ExitReason = Literal[
 
 ET = ZoneInfo("America/New_York")
 
-# (trigger gain multiplier, new stop multiplier, ratchet level)
-# E.g. (1.20, 1.00, 1) means: at +20% gain, raise stop to entry (breakeven) and
-# move ratchet_level to 1. Subsequent ticks above +20% don't change anything
-# until the next threshold (+30%) is crossed.
+# Continuous trail configuration. The stop locks in at
+# `peak * (1 - width)` once peak_gain crosses the activation threshold.
 #
-# Each level keeps a ~20pp buffer between the trigger and the new stop —
-# giving options room to breathe through normal intraday noise before
-# we lock in a level. The previous table used +10%/+20%/+25%/+40% which
-# tripped on routine wiggles and bid/ask slippage turned breakeven exits
-# into real losses; see docstring above.
-RATCHET_TABLE: tuple[tuple[Decimal, Decimal, int], ...] = (
-    (Decimal("1.20"), Decimal("1.00"), 1),  # +20% → stop to breakeven
-    (Decimal("1.30"), Decimal("1.10"), 2),  # +30% → stop to +10%
-    (Decimal("1.40"), Decimal("1.20"), 3),  # +40% → stop to +20%
-    (Decimal("1.60"), Decimal("1.30"), 4),  # +60% → stop to +30%
-)
+# Two regimes: a standard 5% trail above the +5% activation, and a
+# tighter 3% trail once peak_gain crosses +40% to protect big winners
+# more aggressively.
+#
+# All Decimals — no float math anywhere in the strategy.
+TRAIL_ACTIVATION_GAIN: Decimal = Decimal("0.05")    # activate at peak gain >= +5%
+TRAIL_WIDTH: Decimal = Decimal("0.05")               # standard: 5% behind peak
+TIGHT_TRAIL_GAIN: Decimal = Decimal("0.40")          # aggressive regime at peak gain >= +40%
+TIGHT_TRAIL_WIDTH: Decimal = Decimal("0.03")         # aggressive: 3% behind peak
 
 # Default tunables. Caller can override.
 DEFAULT_MARKET_CLOSE = time(15, 55)              # ET wall-clock
@@ -89,7 +92,16 @@ class Position:
     expiration: date
     initial_stop_pct: Decimal      # e.g. Decimal("0.20") for -20% initial stop
     stop_price: Decimal            # current trailing stop level (price)
-    ratchet_level: int = 0         # 0 = initial, 1..4 = ratchet thresholds crossed
+    # Running maximum of `current_price` seen across all evaluate() calls.
+    # The continuous trail anchors off this — stop = peak_price * (1 - width)
+    # once activated. Initialized to entry_price by open_position(); never
+    # drops, only rises tick-by-tick.
+    peak_price: Decimal = Decimal(0)
+    ratchet_level: int = 0
+    # ratchet_level meaning under continuous trail:
+    #   0 = trail not active (initial stop in effect)
+    #   1 = standard trail active (5% behind peak)
+    #   2 = aggressive trail active (3% behind peak, peak gain >= +40%)
 
 
 @dataclass(frozen=True)
@@ -135,6 +147,7 @@ def open_position(
         expiration=expiration,
         initial_stop_pct=initial_stop_pct,
         stop_price=initial_stop,
+        peak_price=entry_price,    # start tracking from entry
         ratchet_level=0,
     )
 
@@ -159,22 +172,51 @@ def evaluate(
     if current_price <= 0:
         raise ValueError(f"current_price must be positive; got {current_price}")
 
-    # ---- Step 1: ratchet update --------------------------------------------
-    new_stop = position.stop_price
-    new_level = position.ratchet_level
-    for trigger_mul, stop_mul, level in RATCHET_TABLE:
-        threshold_price = position.entry_price * trigger_mul
-        if current_price >= threshold_price and level > new_level:
-            new_level = level
-            candidate = position.entry_price * stop_mul
-            if candidate > new_stop:
-                new_stop = candidate
-
-    new_position = (
-        position
-        if new_stop == position.stop_price and new_level == position.ratchet_level
-        else replace(position, stop_price=new_stop, ratchet_level=new_level)
+    # ---- Step 1: peak update + continuous trail ----------------------------
+    # The stop is a continuous function of the running peak. We update
+    # peak first (only ever upward), then derive the trail stop from it.
+    peak_price = (
+        current_price
+        if current_price > position.peak_price
+        else position.peak_price
     )
+    peak_gain = (peak_price - position.entry_price) / position.entry_price
+
+    # Pick the trail width by regime. Below activation, no trail —
+    # the initial stop stays in force.
+    if peak_gain >= TIGHT_TRAIL_GAIN:
+        new_level = 2
+        trail_stop = peak_price * (Decimal(1) - TIGHT_TRAIL_WIDTH)
+    elif peak_gain >= TRAIL_ACTIVATION_GAIN:
+        new_level = 1
+        trail_stop = peak_price * (Decimal(1) - TRAIL_WIDTH)
+    else:
+        new_level = position.ratchet_level   # don't downgrade if already activated
+        trail_stop = None
+
+    # Apply the trail. Never below breakeven (once activated, the stop
+    # locks in at least at entry). Never below the previous stop (stops
+    # only move up). Never downgrade the ratchet_level either.
+    if trail_stop is not None:
+        candidate = trail_stop if trail_stop >= position.entry_price else position.entry_price
+        new_stop = candidate if candidate > position.stop_price else position.stop_price
+    else:
+        new_stop = position.stop_price
+    new_level = max(new_level, position.ratchet_level)
+
+    if (
+        new_stop == position.stop_price
+        and new_level == position.ratchet_level
+        and peak_price == position.peak_price
+    ):
+        new_position = position
+    else:
+        new_position = replace(
+            position,
+            stop_price=new_stop,
+            peak_price=peak_price,
+            ratchet_level=new_level,
+        )
 
     # ---- Step 2: exit checks in priority order -----------------------------
     # 2a. Stop loss — capital protection first.

@@ -22,8 +22,15 @@ export default function OpenPositionCard({ position, livePrice, snapshot }) {
   const markerPct = span > 0 ? Math.min(100, Math.max(0, ((current - stop) / span) * 100)) : 0
   const entryPct = span > 0 ? Math.min(100, Math.max(0, ((entry - stop) / span) * 100)) : 0
 
-  const ratchetLabels = ['initial', '+10%', '+20%', '+25%', '+40%']
-  const ratchetLabel = ratchetLabels[position.ratchet_level] ?? 'initial'
+  // Continuous trail (2026-06): ratchet_level reflects regime, not
+  // discrete thresholds. We show the actual stop as a gain % from entry
+  // since that's the operationally meaningful number.
+  const stopGainPct = entry > 0 ? (stop - entry) / entry : 0
+  const ratchetLabel = position.ratchet_level === 0
+    ? 'initial −20%'
+    : position.ratchet_level === 2
+      ? `tight trail • stop ${stopGainPct >= 0 ? '+' : ''}${(stopGainPct * 100).toFixed(1)}%`
+      : `trailing • stop ${stopGainPct >= 0 ? '+' : ''}${(stopGainPct * 100).toFixed(1)}%`
 
   return (
     <article

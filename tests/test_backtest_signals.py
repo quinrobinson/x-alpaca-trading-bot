@@ -54,10 +54,17 @@ def test_stop_loss_trade_exits_at_minus_20(tmp_path: Path) -> None:
 
 
 def test_ratchet_trade_locks_in_profit(tmp_path: Path) -> None:
-    """Ride to +60%, then pull back below the +30% ratchet stop — exit locks in profit.
+    """Ride to +60% peak, then pull back below the trail — exit locks in profit.
 
-    New ratchet table (May 2026): triggers are +20/+30/+40/+60. Stops move
-    to breakeven / +10% / +20% / +30% respectively.
+    Continuous trail (2026-06): trail activates at +5%, runs 5% behind
+    peak until peak gain >= +40%, then tightens to 3%. On this path:
+        +20% (peak 2.40) -> trail active, stop = 2.40 * 0.95 = 2.28
+        +30% (peak 2.60) -> stop = 2.60 * 0.95 = 2.47
+        +40% (peak 2.80) -> aggressive, stop = 2.80 * 0.97 = 2.716
+        +60% (peak 3.20) -> stop = 3.20 * 0.97 = 3.104
+        pullback to 2.50 — well below stop, exit fires at 2.50
+    Locked-in PnL is still +25%; ratchet_level is now 2 (was 4 under the
+    old discrete table).
     """
     csv_path = tmp_path / "ratchet.csv"
     entry = Decimal("2.00")
@@ -65,20 +72,19 @@ def test_ratchet_trade_locks_in_profit(tmp_path: Path) -> None:
     t0 = datetime(2026, 5, 12, 13, 30, tzinfo=timezone.utc)
     _write_csv(csv_path, [
         _row("t1", entry, expiry, t0, entry),
-        _row("t1", entry, expiry, t0 + timedelta(minutes=5), Decimal("2.40")),   # +20% level 1
-        _row("t1", entry, expiry, t0 + timedelta(minutes=10), Decimal("2.60")),  # +30% level 2
-        _row("t1", entry, expiry, t0 + timedelta(minutes=15), Decimal("2.80")),  # +40% level 3
-        _row("t1", entry, expiry, t0 + timedelta(minutes=20), Decimal("3.20")),  # +60% level 4
-        _row("t1", entry, expiry, t0 + timedelta(minutes=25), Decimal("2.50")),  # below stop ($2.60)
+        _row("t1", entry, expiry, t0 + timedelta(minutes=5), Decimal("2.40")),
+        _row("t1", entry, expiry, t0 + timedelta(minutes=10), Decimal("2.60")),
+        _row("t1", entry, expiry, t0 + timedelta(minutes=15), Decimal("2.80")),
+        _row("t1", entry, expiry, t0 + timedelta(minutes=20), Decimal("3.20")),
+        _row("t1", entry, expiry, t0 + timedelta(minutes=25), Decimal("2.50")),
     ])
 
     results = bts.run_backtest(csv_path, stop_pct=Decimal("0.20"))
     assert len(results) == 1
     r = results[0]
     assert r.exit_reason == "stop_loss"
-    assert r.ratchet_level == 4
+    assert r.ratchet_level == 2          # aggressive regime reached
     assert r.exit_price == Decimal("2.50")
-    # PnL is +25% (exited at $2.50 from $2.00 entry); ratchet locked in real gain
     assert r.pnl_pct == Decimal("0.25")
 
 

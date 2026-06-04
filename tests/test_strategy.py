@@ -18,7 +18,10 @@ from x_alpaca_trading_bot import strategy
 from x_alpaca_trading_bot.strategy import (
     DEFAULT_MARKET_CLOSE,
     ET,
-    RATCHET_TABLE,
+    TIGHT_TRAIL_GAIN,
+    TIGHT_TRAIL_WIDTH,
+    TRAIL_ACTIVATION_GAIN,
+    TRAIL_WIDTH,
     EvaluationResult,
     ExitDecision,
     Position,
@@ -55,6 +58,7 @@ def test_open_position_sets_initial_stop_at_minus_20() -> None:
     p = _new_position(entry=Decimal("2.50"), stop_pct=Decimal("0.20"))
     assert p.entry_price == Decimal("2.50")
     assert p.stop_price == Decimal("2.00")
+    assert p.peak_price == Decimal("2.50")   # peak starts at entry
     assert p.ratchet_level == 0
 
 
@@ -117,89 +121,155 @@ def test_no_exit_above_initial_stop() -> None:
     assert result.position.ratchet_level == 0
 
 
-# ---- Ratchet ratchet ratchet ---------------------------------------------
+# ---- Continuous trail ------------------------------------------------------
 
-def test_ratchet_level_1_at_plus_20_moves_stop_to_breakeven() -> None:
+def test_trail_inactive_below_5_pct_keeps_initial_stop() -> None:
+    """Below the +5% activation threshold the initial -20% stop holds."""
     p = _new_position(entry=Decimal("2.50"))
-    result = evaluate(p, Decimal("3.00"), NOW)  # +20%
+    result = evaluate(p, Decimal("2.60"), NOW)   # +4%
+    assert result.exit is None
+    assert result.position.ratchet_level == 0
+    assert result.position.stop_price == Decimal("2.00")  # initial -20% unchanged
+    assert result.position.peak_price == Decimal("2.60")  # peak tracked even pre-activation
+
+
+def test_trail_activates_at_5_pct_clamps_stop_to_breakeven() -> None:
+    """At exactly +5% peak gain the trail activates. Raw trail_stop is
+    peak * 0.95 = entry * 1.05 * 0.95 = entry * 0.9975 (below entry),
+    so it clamps to breakeven."""
+    p = _new_position(entry=Decimal("2.50"))
+    result = evaluate(p, Decimal("2.625"), NOW)  # +5% exactly
     assert result.exit is None
     assert result.position.ratchet_level == 1
-    assert result.position.stop_price == Decimal("2.50")  # breakeven
+    assert result.position.stop_price == Decimal("2.50")   # clamped to breakeven
+    assert result.position.peak_price == Decimal("2.625")
 
 
-def test_ratchet_level_2_at_plus_30_moves_stop_to_plus_10() -> None:
+def test_trail_follows_peak_continuously() -> None:
+    """Above +5%, stop = peak * 0.95 and ratchets up tick by tick."""
     p = _new_position(entry=Decimal("2.50"))
-    result = evaluate(p, Decimal("3.25"), NOW)  # +30%
+
+    # Tick 1: peak $2.875 (+15%). stop = 2.875 * 0.95 = 2.73125 (+9.25%)
+    after_1 = evaluate(p, Decimal("2.875"), NOW).position
+    assert after_1.ratchet_level == 1
+    assert after_1.peak_price == Decimal("2.875")
+    assert after_1.stop_price == Decimal("2.73125")
+
+    # Tick 2: peak rises to $3.10 (+24%). stop = 3.10 * 0.95 = 2.945
+    after_2 = evaluate(after_1, Decimal("3.10"), NOW + timedelta(minutes=1)).position
+    assert after_2.peak_price == Decimal("3.10")
+    assert after_2.stop_price == Decimal("2.945")
+
+
+def test_trail_peak_persists_when_price_drops() -> None:
+    """If the peak was higher than the current tick's price, peak stays
+    and the stop stays. Only upward moves change anything."""
+    p = _new_position(entry=Decimal("2.50"))
+    high = evaluate(p, Decimal("3.00"), NOW).position             # peak +20%
+    assert high.peak_price == Decimal("3.00")
+    after_dip = evaluate(high, Decimal("2.85"), NOW + timedelta(minutes=1)).position
+    assert after_dip.peak_price == Decimal("3.00")                 # peak unchanged
+    assert after_dip.stop_price == high.stop_price                 # stop unchanged
+    assert after_dip.ratchet_level == 1
+
+
+def test_trail_stop_fires_when_pullback_crosses_it() -> None:
+    """After a peak, a pullback below the trail stop triggers an exit."""
+    p = _new_position(entry=Decimal("2.50"))
+    # Peak at +20% -> stop at 3.00 * 0.95 = 2.85
+    high = evaluate(p, Decimal("3.00"), NOW).position
+    assert high.stop_price == Decimal("2.85")
+    # Pullback to $2.80 — below the trail
+    result = evaluate(high, Decimal("2.80"), NOW + timedelta(minutes=1))
+    assert result.exit is not None
+    assert result.exit.reason == "stop_loss"
+    assert result.position.peak_price == Decimal("3.00")    # peak preserved
+
+
+def test_aggressive_trail_activates_at_40_pct_peak() -> None:
+    """At peak gain >= +40% the trail tightens from 5% to 3%."""
+    p = _new_position(entry=Decimal("2.50"))
+    # Peak at +40% exactly. trail_stop = 3.50 * 0.97 = 3.395 (+35.8%)
+    result = evaluate(p, Decimal("3.50"), NOW)
     assert result.exit is None
     assert result.position.ratchet_level == 2
-    assert result.position.stop_price == Decimal("2.75")  # entry * 1.10
+    assert result.position.peak_price == Decimal("3.50")
+    assert result.position.stop_price == Decimal("3.395")
 
 
-def test_ratchet_level_3_at_plus_40_moves_stop_to_plus_20() -> None:
+def test_aggressive_trail_ratchets_continuously() -> None:
+    """Above the aggressive threshold, stop = peak * 0.97 and trails up."""
     p = _new_position(entry=Decimal("2.50"))
-    result = evaluate(p, Decimal("3.50"), NOW)  # +40%
-    assert result.exit is None
-    assert result.position.ratchet_level == 3
-    assert result.position.stop_price == Decimal("3.00")  # entry * 1.20
+    # Tick 1: +50% peak -> stop = 3.75 * 0.97 = 3.6375
+    after = evaluate(p, Decimal("3.75"), NOW).position
+    assert after.ratchet_level == 2
+    assert after.stop_price == Decimal("3.6375")
+    # Tick 2: +60% peak -> stop = 4.00 * 0.97 = 3.88
+    later = evaluate(after, Decimal("4.00"), NOW + timedelta(minutes=1)).position
+    assert later.stop_price == Decimal("3.88")
 
 
-def test_ratchet_level_4_at_plus_60_moves_stop_to_plus_30() -> None:
+def test_trail_never_moves_down_on_pullback() -> None:
+    """Once raised, the stop holds even on big pullbacks (until it triggers)."""
     p = _new_position(entry=Decimal("2.50"))
-    result = evaluate(p, Decimal("4.00"), NOW)  # +60%
-    assert result.exit is None
-    assert result.position.ratchet_level == 4
-    assert result.position.stop_price == Decimal("3.25")  # entry * 1.30
-
-
-def test_ratchet_below_first_trigger_does_not_move_stop() -> None:
-    """The first trigger is +20% now (was +10%). A +15% move shouldn't ratchet."""
-    p = _new_position(entry=Decimal("2.50"))
-    result = evaluate(p, Decimal("2.875"), NOW)  # +15%
-    assert result.exit is None
-    assert result.position.ratchet_level == 0  # no ratchet yet
-    assert result.position.stop_price == Decimal("2.00")  # initial stop unchanged
-
-
-def test_ratchet_skips_intermediate_levels_on_big_jump() -> None:
-    """One tick from entry directly to +70% — must land at level 4."""
-    p = _new_position(entry=Decimal("2.50"))
-    result = evaluate(p, Decimal("4.25"), NOW)  # +70%, past +60%
-    assert result.exit is None
-    assert result.position.ratchet_level == 4
-    assert result.position.stop_price == Decimal("3.25")
-
-
-def test_stop_never_moves_down_after_pullback() -> None:
-    """Once ratcheted up, the stop stays high even if price pulls back."""
-    p = _new_position(entry=Decimal("2.50"))
-    # First tick: +40%, stop ratchets to +20% (=$3.00)
-    after_high = evaluate(p, Decimal("3.50"), NOW).position
-    assert after_high.stop_price == Decimal("3.00")
-    assert after_high.ratchet_level == 3
-
-    # Second tick: price pulls back to +5% — stop must stay at $3.00,
-    # which means the position should now exit on stop_loss because
-    # current_price ($2.625) < stop ($3.00).
-    result = evaluate(after_high, Decimal("2.625"), NOW + timedelta(minutes=1))
+    # Peak +40% -> stop at 3.395
+    high = evaluate(p, Decimal("3.50"), NOW).position
+    assert high.stop_price == Decimal("3.395")
+    # Pullback to +20% (below stop) — stop fires, but stop_price stays
+    result = evaluate(high, Decimal("3.00"), NOW + timedelta(minutes=1))
+    assert result.position.stop_price == Decimal("3.395")
     assert result.exit is not None
     assert result.exit.reason == "stop_loss"
-    assert result.position.stop_price == Decimal("3.00")  # didn't drop
 
 
-def test_ratchet_does_not_downgrade_existing_state() -> None:
-    """Re-evaluating at a level we've already crossed shouldn't change state."""
+def test_ratchet_level_does_not_downgrade() -> None:
+    """Once the aggressive regime is reached, dipping back below +40% on
+    the current price (peak stays put) keeps ratchet_level at 2."""
     p = _new_position(entry=Decimal("2.50"))
-    after_4 = evaluate(p, Decimal("4.00"), NOW).position  # +60% lands at level 4
-    assert after_4.ratchet_level == 4
+    after_high = evaluate(p, Decimal("3.75"), NOW).position    # +50% -> level 2
+    assert after_high.ratchet_level == 2
+    # Price drops to +30%; peak stays at +50%, so level stays 2.
+    result = evaluate(after_high, Decimal("3.25"), NOW + timedelta(minutes=1))
+    assert result.position.ratchet_level == 2
 
-    # Price drops to +30% — ratchet shouldn't go DOWN to level 2.
-    result = evaluate(after_4, Decimal("3.25"), NOW + timedelta(minutes=1))
-    # Position would stop out (current $3.25 ≈ stop $3.25), but the state
-    # update happens BEFORE the stop check, so ratchet_level remains 4.
-    assert result.position.ratchet_level == 4
-    assert result.position.stop_price == Decimal("3.25")
+
+def test_big_jump_straight_to_aggressive_regime() -> None:
+    """One tick from entry directly to +50% lands in level 2 with 3% trail."""
+    p = _new_position(entry=Decimal("2.50"))
+    result = evaluate(p, Decimal("3.75"), NOW)
+    assert result.exit is None
+    assert result.position.ratchet_level == 2
+    assert result.position.peak_price == Decimal("3.75")
+    assert result.position.stop_price == Decimal("3.6375")    # 3.75 * 0.97
+
+
+def test_inod_scenario_continuous_trail_protects_the_trade() -> None:
+    """Regression for the INOD 2026-06-04 trade. Entry $1.80, peak $1.96
+    (+8.89%), drift back to $1.72 by close. Discrete +20% table never
+    fired and the trade closed at -11.1% via 15:55 flatten. Continuous
+    trail should stop out near +3.4% on the pullback instead."""
+    p = open_position(
+        entry_price=Decimal("1.80"),
+        qty=5,
+        opened_at=NOW,
+        expiration=date(2026, 6, 18),
+        initial_stop_pct=Decimal("0.20"),
+    )
+    # Reach the historical peak. Trail activates at +5%; +8.89% > +5%.
+    # stop = 1.96 * 0.95 = 1.862  (= entry * 1.0344 = +3.44%)
+    after_peak = evaluate(p, Decimal("1.96"), NOW).position
+    assert after_peak.ratchet_level == 1
+    assert after_peak.peak_price == Decimal("1.96")
+    assert after_peak.stop_price == Decimal("1.862")
+
+    # Mid drifts back down. When it crosses below $1.862, the stop fires.
+    result = evaluate(after_peak, Decimal("1.86"), NOW + timedelta(minutes=30))
     assert result.exit is not None
     assert result.exit.reason == "stop_loss"
+    # Exit price reflects the current tick — the actual fill on Alpaca
+    # will be at the live bid which can be lower, but the strategy's
+    # decision is anchored to the mid here.
+    assert result.exit.exit_price == Decimal("1.86")
 
 
 # ---- Time-based: 15:55 ET --------------------------------------------------
@@ -282,13 +352,15 @@ def test_stale_below_4h_does_not_exit() -> None:
 
 
 def test_stale_with_movement_does_not_exit() -> None:
-    """Open 5h but price has moved +5% — not stale."""
+    """Open 5h but price has moved beyond the stale threshold — not stale.
+    With continuous trail active at +5%, the trail also kicks in here,
+    but the test is specifically that stale_no_movement does NOT fire."""
     opened = NOW - timedelta(hours=5)
     p = _new_position(opened_at=opened, entry=Decimal("2.50"))
-    result = evaluate(p, Decimal("2.625"), NOW)  # +5%
-    # The ratchet won't fire (need +10%), but stale shouldn't either.
+    result = evaluate(p, Decimal("2.625"), NOW)  # +5% — beyond 2% movement gate
     assert result.exit is None
-    assert result.position.ratchet_level == 0
+    # Trail does activate at +5%; that's expected and not what this test guards.
+    assert result.position.ratchet_level == 1
 
 
 # ---- Priority ordering ----------------------------------------------------
@@ -316,22 +388,37 @@ def test_time_stop_beats_dte() -> None:
 # ---- Clean hold -----------------------------------------------------------
 
 def test_clean_hold_returns_no_exit() -> None:
+    """Tick at a price below the current peak: no exit, no state change.
+    Using a price <= entry (= initial peak) so peak_price doesn't update."""
     p = _new_position()
-    result = evaluate(p, Decimal("2.55"), NOW)
+    result = evaluate(p, Decimal("2.45"), NOW)
     assert result.exit is None
     assert result.position == p  # unchanged
 
 
-# ---- Ratchet table sanity -------------------------------------------------
+# ---- Trail invariants -----------------------------------------------------
 
-def test_ratchet_table_is_monotonic() -> None:
-    """Triggers and new stops must both increase monotonically."""
-    for i in range(1, len(RATCHET_TABLE)):
-        trig_prev, stop_prev, level_prev = RATCHET_TABLE[i - 1]
-        trig_curr, stop_curr, level_curr = RATCHET_TABLE[i]
-        assert trig_curr > trig_prev
-        assert stop_curr > stop_prev
-        assert level_curr > level_prev
+def test_trail_constants_are_sensible() -> None:
+    """Sanity bounds on the trail config so a future edit can't silently
+    invert the relationship between standard and aggressive regimes."""
+    # Activation must happen before the aggressive regime kicks in.
+    assert TRAIL_ACTIVATION_GAIN < TIGHT_TRAIL_GAIN
+    # Aggressive width must be tighter (smaller) than standard.
+    assert TIGHT_TRAIL_WIDTH < TRAIL_WIDTH
+    # Widths must be in (0, 1) — fractions of peak, not multiples.
+    assert Decimal(0) < TRAIL_WIDTH < Decimal(1)
+    assert Decimal(0) < TIGHT_TRAIL_WIDTH < Decimal(1)
+
+
+def test_trail_stop_never_drops_across_ticks() -> None:
+    """Property: across a sequence of ticks the stop is non-decreasing."""
+    p = _new_position(entry=Decimal("2.50"))
+    last_stop = p.stop_price
+    # Walk through a noisy path: up, down, up further, down, up.
+    for price in [Decimal(s) for s in ("2.60", "2.80", "2.65", "3.10", "2.95", "3.40", "3.20")]:
+        p = evaluate(p, price, NOW).position
+        assert p.stop_price >= last_stop
+        last_stop = p.stop_price
 
 
 def test_default_market_close_is_1555() -> None:
