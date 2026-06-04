@@ -292,13 +292,81 @@ class Executor:
         *,
         client_order_id: str | None = None,
     ) -> PaperOrder:
-        """Cancel the existing stop, place a new one at `new_stop_price`."""
+        """Move the stop on an existing protective order.
+
+        Tries Alpaca's atomic `replace_order_by_id` first. That swap is
+        atomic from Alpaca's perspective — no window where the old and
+        new orders co-exist on the book, which is what triggered the
+        wash-trade rejections we kept seeing on rapid back-to-back
+        ratchets under the continuous trail.
+
+        Falls back to cancel + brief wait + new submit when replace
+        isn't supported for the order's current state. The fallback
+        waits up to ~3 seconds for the cancel to reach a terminal
+        state before submitting so Alpaca's wash-trade detector
+        doesn't see both orders.
+        """
+        from alpaca.trading.requests import ReplaceOrderRequest
+
         logger.info(
             "modify_stop %s -> new stop %s on %s qty=%s",
             current_stop_order_id, new_stop_price, symbol, qty,
         )
+        cid = client_order_id or _new_client_order_id("stop")
+
+        # Path A: atomic replace. This is the happy path; the rest is
+        # defensive plumbing for the cases Alpaca won't replace cleanly.
+        try:
+            req = ReplaceOrderRequest(
+                stop_price=float(new_stop_price),
+                client_order_id=cid,
+            )
+            order = self._client.replace_order_by_id(current_stop_order_id, req)
+            return _to_paper_order(order)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "replace_order_by_id failed for %s (%s); falling back to cancel+submit",
+                current_stop_order_id, exc,
+            )
+
+        # Path B: cancel + wait + submit. Used when replace is unavailable
+        # or fails (e.g. order already partially filled, already canceled,
+        # state transition in flight). The wait gives Alpaca's matching
+        # engine time to mark the cancel terminal so the new submit doesn't
+        # collide with it.
         self.cancel_order(current_stop_order_id)
-        return self.submit_stop_sell(symbol, qty, new_stop_price, client_order_id=client_order_id)
+        self._wait_for_terminal_state(current_stop_order_id, timeout_seconds=3)
+        return self.submit_stop_sell(symbol, qty, new_stop_price, client_order_id=cid)
+
+    def _wait_for_terminal_state(
+        self,
+        order_id: str,
+        *,
+        timeout_seconds: int = 3,
+        poll_seconds: float = 0.2,
+        clock: Any = time.monotonic,
+        sleeper: Any = time.sleep,
+    ) -> None:
+        """Poll get_order until the order reaches a terminal state, or timeout.
+
+        Used after cancel_order to make sure Alpaca has fully processed
+        the cancel before we submit a same-symbol opposite-side order
+        that would otherwise trip the wash-trade detector.
+        """
+        deadline = clock() + timeout_seconds
+        terminal = {"canceled", "rejected", "expired", "filled"}
+        while clock() < deadline:
+            try:
+                order = self.get_order(order_id)
+            except Exception:  # noqa: BLE001
+                return  # 404 / not found = already terminal; safe to proceed
+            if str(order.status).lower() in terminal:
+                return
+            sleeper(poll_seconds)
+        logger.warning(
+            "cancel of %s did not reach terminal state in %ss; proceeding anyway",
+            order_id, timeout_seconds,
+        )
 
     # ---- Listing ----------------------------------------------------------
 

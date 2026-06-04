@@ -107,6 +107,36 @@ class FakeTradingClient:
         if order_id in self.orders:
             self.orders[order_id].status = "canceled"
 
+    def replace_order_by_id(self, order_id: str, req: Any) -> FakeOrder:
+        """Atomic stop-price update — mirrors Alpaca's replace_order behavior.
+
+        Tests can flip `self.replace_should_fail = True` to simulate Alpaca
+        rejecting the replace (e.g. order in a non-replaceable state), which
+        exercises the cancel+submit fallback path in Executor.modify_stop.
+        """
+        if getattr(self, "replace_should_fail", False):
+            raise RuntimeError("simulated: order not replaceable in current state")
+        if order_id not in self.orders:
+            raise KeyError(order_id)
+        old = self.orders[order_id]
+        new = FakeOrder(
+            id=f"fake-{uuid.uuid4().hex[:8]}",
+            client_order_id=getattr(req, "client_order_id", "") or old.client_order_id,
+            symbol=old.symbol,
+            side=old.side,
+            type=old.type,
+            status="new",
+            qty=old.qty,
+            stop_price=getattr(req, "stop_price", None),
+            limit_price=getattr(req, "limit_price", None),
+        )
+        # Replace is atomic from Alpaca's perspective: old order is replaced,
+        # not separately canceled. Mark the old as "replaced" terminal.
+        old.status = "replaced"
+        self.orders[new.id] = new
+        self.submitted.append(new)
+        return new
+
     def get_orders(self, *, filter: Any = None) -> list[FakeOrder]:  # noqa: A002
         return [o for o in self.orders.values() if o.status in ("new", "accepted", "partially_filled")]
 
@@ -281,7 +311,13 @@ def test_cancel_order_swallows_errors_for_idempotency(executor: Executor, fake_c
 
 # ---- modify_stop ----------------------------------------------------------
 
-def test_modify_stop_cancels_old_then_submits_new(executor: Executor, fake_client: FakeTradingClient) -> None:
+def test_modify_stop_uses_atomic_replace_when_available(
+    executor: Executor, fake_client: FakeTradingClient,
+) -> None:
+    """Happy path: replace_order_by_id succeeds, no cancel was needed.
+    This is the primary path under the new continuous trail — it dodges
+    the wash-trade race by never having two same-symbol opposite-side
+    orders on the book at once."""
     initial = executor.submit_stop_sell("AAPL260620C00185000", 1, Decimal("2.00"))
     new = executor.modify_stop(
         initial.alpaca_order_id,
@@ -289,9 +325,50 @@ def test_modify_stop_cancels_old_then_submits_new(executor: Executor, fake_clien
         qty=1,
         new_stop_price=Decimal("2.25"),
     )
+    assert new.stop_price == Decimal("2.25")
+    assert new.alpaca_order_id != initial.alpaca_order_id
+    # Crucially, NO cancel was issued — Alpaca's atomic replace handled it.
+    assert initial.alpaca_order_id not in fake_client.cancellations
+
+
+def test_modify_stop_falls_back_to_cancel_submit_when_replace_fails(
+    executor: Executor, fake_client: FakeTradingClient, monkeypatch,
+) -> None:
+    """If replace_order_by_id fails (Alpaca won't replace orders in some
+    states), the executor falls back to the legacy cancel + submit path."""
+    fake_client.replace_should_fail = True
+
+    # Stub out the terminal-state wait so the test runs instantly.
+    monkeypatch.setattr(executor, "_wait_for_terminal_state", lambda *a, **k: None)
+
+    initial = executor.submit_stop_sell("AAPL260620C00185000", 1, Decimal("2.00"))
+    new = executor.modify_stop(
+        initial.alpaca_order_id,
+        symbol="AAPL260620C00185000",
+        qty=1,
+        new_stop_price=Decimal("2.25"),
+    )
+    # Fallback fires: cancel was issued and a new stop landed.
     assert initial.alpaca_order_id in fake_client.cancellations
     assert new.stop_price == Decimal("2.25")
     assert new.alpaca_order_id != initial.alpaca_order_id
+
+
+def test_wait_for_terminal_state_returns_immediately_when_canceled(
+    executor: Executor, fake_client: FakeTradingClient,
+) -> None:
+    """The wait helper exits as soon as the order reaches a terminal state.
+    Drive it with a logical clock so the test doesn't actually sleep."""
+    order = executor.submit_stop_sell("AAPL260620C00185000", 1, Decimal("2.00"))
+    fake_client.orders[order.alpaca_order_id].status = "canceled"
+
+    ticks = iter([0.0, 0.1, 0.2, 0.3, 0.4])
+    executor._wait_for_terminal_state(
+        order.alpaca_order_id,
+        timeout_seconds=10,
+        clock=lambda: next(ticks),
+        sleeper=lambda _: None,
+    )  # returns without raising — that's the assertion
 
 
 # ---- list + reconcile -----------------------------------------------------

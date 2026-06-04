@@ -103,6 +103,14 @@ _RECONCILE_EVERY_N_TICKS = 6
 _PRICE_TRACK_OFFSETS_MIN = (1, 5, 15, 30)
 _PRICE_TRACK_GRACE = timedelta(minutes=10)
 
+# Minimum stop bump (as a fraction of entry price) below which we skip
+# the modify_stop call entirely. The continuous trail can produce tiny
+# upticks every 5 seconds when peak rises slightly; rate-limiting the
+# API churn here keeps Alpaca's wash-trade detector happy and avoids
+# burning quota. The strategy's internal stop_price still advances —
+# we just don't push every micro-adjustment to Alpaca.
+_MIN_STOP_BUMP_FRACTION = Decimal("0.01")  # 1% of entry
+
 
 def _stream_listener_alive(listener: Any | None) -> bool:
     """True iff tweepy's background stream thread is currently running.
@@ -1023,6 +1031,25 @@ class Orchestrator:
         # If yes, replace the stop on Alpaca with a fresh one at new_stop.
         prior_stop_on_book = self._stop_price_on_book(record)
         if prior_stop_on_book is not None and new_stop > prior_stop_on_book:
+            # Min-bump gate: the continuous trail can edge the stop up
+            # every few seconds when peak rises slightly. Most of those
+            # upticks aren't worth a cancel+submit pair on Alpaca — they
+            # just burn API calls and raise the chance of a wash-trade
+            # rejection. Only push to Alpaca if the move is at least
+            # _MIN_STOP_BUMP_FRACTION of the entry price. The strategy's
+            # internal stop_price stays at the higher level so we'll
+            # catch up the next tick a bigger move qualifies.
+            bump = new_stop - prior_stop_on_book
+            min_bump = record.entry_price * _MIN_STOP_BUMP_FRACTION
+            if bump < min_bump:
+                logger.debug(
+                    "skipping modify_stop for signal_id=%s: bump=%s < min=%s",
+                    record.signal_id, bump, min_bump,
+                )
+                if eval_result.exit is None:
+                    return
+                self._close_position(record, eval_result.exit, now)
+                return
             # Alpaca rejects stop orders priced at-or-above the market — they
             # would fire immediately. Our quote.mid can briefly disagree with
             # Alpaca's reference price (illiquid contracts, wide spreads,
