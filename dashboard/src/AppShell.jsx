@@ -1,23 +1,44 @@
-import { useCallback, useEffect, useState } from 'react'
-import Header from '../components/v2/Header.jsx'
-import OpenPositionCard from '../components/v2/OpenPositionCard.jsx'
-import Timeline from '../components/v2/Timeline.jsx'
-import StatsBar from '../components/v2/StatsBar.jsx'
-import CollapsibleSection from '../components/v2/CollapsibleSection.jsx'
-import MarketContext from '../components/MarketContext.jsx'
-import { useWebSocket } from '../hooks/useWebSocket.js'
-import { apiUrl, wsUrl } from '../config.js'
+import { createContext, useCallback, useContext, useEffect, useState } from 'react'
+import { Outlet } from 'react-router-dom'
+import Header from './components/v2/Header.jsx'
+import BottomNav from './components/v2/BottomNav.jsx'
+import { useWebSocket } from './hooks/useWebSocket.js'
+import { apiUrl, wsUrl } from './config.js'
+
+/**
+ * App shell — owns the polling + WebSocket state once and shares it
+ * with every routed view via context. Without this, each tab would
+ * remount and refetch on every navigation; with it, tab switches are
+ * instant and the in-flight WS connection is preserved.
+ *
+ * Layout:
+ *   ┌─────────────────────────┐
+ *   │ Header (sticky top)     │
+ *   ├─────────────────────────┤
+ *   │ <Outlet />              │  ← active route's content, scrolls
+ *   │                         │
+ *   ├─────────────────────────┤
+ *   │ BottomNav (fixed)       │
+ *   └─────────────────────────┘
+ */
 
 const POLL_MS = 30_000
 
-export default function Home() {
+const AppDataContext = createContext(null)
+
+export function useAppData() {
+  const v = useContext(AppDataContext)
+  if (v === null) throw new Error('useAppData must be used inside <AppShell>')
+  return v
+}
+
+export default function AppShell() {
   const [health, setHealth] = useState(null)
   const [positions, setPositions] = useState([])
   const [timeline, setTimeline] = useState([])
   const [performance, setPerformance] = useState(null)
-  const [killSwitches, setKillSwitches] = useState([])
   const [marketCtx, setMarketCtx] = useState(null)
-  const [showRejected, setShowRejected] = useState(false)
+  const [killSwitches, setKillSwitches] = useState([])
 
   // ---- REST polling ---------------------------------------------------
 
@@ -25,28 +46,28 @@ export default function Home() {
     try {
       const r = await fetch(apiUrl('/timeline?limit=50'))
       if (r.ok) setTimeline(await r.json())
-    } catch (err) { /* swallow */ }
+    } catch { /* swallow */ }
   }, [])
 
   const fetchPositions = useCallback(async () => {
     try {
       const r = await fetch(apiUrl('/positions'))
       if (r.ok) setPositions(await r.json())
-    } catch (err) { /* swallow */ }
+    } catch { /* swallow */ }
   }, [])
 
   const fetchPerformance = useCallback(async () => {
     try {
       const r = await fetch(apiUrl('/performance'))
       if (r.ok) setPerformance(await r.json())
-    } catch (err) { /* swallow */ }
+    } catch { /* swallow */ }
   }, [])
 
   const fetchMarket = useCallback(async () => {
     try {
       const r = await fetch(apiUrl('/market'))
       if (r.ok) setMarketCtx(await r.json())
-    } catch (err) { /* swallow */ }
+    } catch { /* swallow */ }
   }, [])
 
   const fetchAll = useCallback(async () => {
@@ -62,7 +83,7 @@ export default function Home() {
         setHealth(h)
         if (Array.isArray(h.active_switches)) setKillSwitches(h.active_switches)
       }
-    } catch (err) { /* swallow */ }
+    } catch { /* swallow */ }
   }, [fetchTimeline, fetchPositions, fetchPerformance, fetchMarket])
 
   useEffect(() => {
@@ -102,55 +123,29 @@ export default function Home() {
 
   const { status: wsStatus } = useWebSocket(wsUrl('/ws'), { onEvent: handleWs })
 
-  // ---- Render ----------------------------------------------------------
+  const ctx = {
+    health, positions, timeline, performance, marketCtx,
+    killSwitches, wsStatus,
+    refresh: { fetchAll, fetchTimeline, fetchPositions, fetchPerformance, fetchMarket },
+  }
 
   return (
-    <div className="min-h-screen flex flex-col max-w-3xl mx-auto lg:max-w-6xl">
-      <Header
-        wsStatus={wsStatus}
-        health={health}
-        performance={performance}
-        killSwitches={killSwitches}
-      />
-
-      <main className="flex-1 px-4 py-5 lg:px-6 lg:py-6 lg:grid lg:grid-cols-3 lg:gap-5 space-y-4 lg:space-y-0">
-        {/* Left column (mobile: stacked first) — open position + stats */}
-        <aside className="lg:col-span-1 space-y-4">
-          {positions.length === 0 ? (
-            <section className="card p-6 text-center text-sm text-fg-dim">
-              No open positions.
-            </section>
-          ) : (
-            positions.map(p => (
-              <OpenPositionCard
-                key={p.signal_id}
-                position={p}
-                livePrice={p.live_mid != null ? Number(p.live_mid) : undefined}
-                snapshot={p.snapshot}
-              />
-            ))
-          )}
-
-          <StatsBar performance={performance} />
-
-          <CollapsibleSection title="Market context">
-            <MarketContext
-              snapshot={marketCtx}
-              latestSectorString={marketCtx?.sector_etf_trend}
-            />
-          </CollapsibleSection>
-        </aside>
-
-        {/* Right column (mobile: stacked second) — timeline */}
-        <section className="lg:col-span-2">
-          <Timeline
-            items={timeline}
-            showRejected={showRejected}
-            onToggleRejected={setShowRejected}
-          />
-        </section>
-      </main>
-
-    </div>
+    <AppDataContext.Provider value={ctx}>
+      <div className="min-h-screen flex flex-col max-w-3xl mx-auto lg:max-w-6xl">
+        <Header
+          wsStatus={wsStatus}
+          health={health}
+          performance={performance}
+          killSwitches={killSwitches}
+        />
+        {/* pb-20 keeps the last bit of scrollable content from hiding
+            behind the bottom nav. The nav itself adds safe-area-inset-
+            bottom for the iOS home indicator. */}
+        <main className="flex-1 px-4 py-5 lg:px-6 lg:py-6 pb-24">
+          <Outlet />
+        </main>
+        <BottomNav />
+      </div>
+    </AppDataContext.Provider>
   )
 }
