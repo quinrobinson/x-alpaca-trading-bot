@@ -138,8 +138,21 @@ export default function OpenPositionCard({ position, livePrice, snapshot }) {
           candles into noise. */}
       <div className="mt-4">
         <div className="flex items-center justify-between mb-2">
-          <div className="mono-label" style={{ fontSize: 10 }}>
-            {position.ticker} underlying
+          <div className="flex items-baseline gap-2">
+            <div className="mono-label" style={{ fontSize: 10 }}>
+              {position.ticker} underlying
+            </div>
+            <div
+              className="font-mono"
+              style={{
+                fontSize: 9,
+                letterSpacing: '0.18em',
+                color: 'var(--fg-faint)',
+              }}
+              title="Heikin-Ashi candles"
+            >
+              HA
+            </div>
           </div>
           <TimeframeToggle value={chartTimeframe} onChange={setChartTimeframe} />
         </div>
