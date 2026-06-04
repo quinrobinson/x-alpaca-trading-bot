@@ -15,7 +15,12 @@ export default function BottomNav() {
       className="fixed bottom-0 inset-x-0 z-20 border-t border-border"
       style={{
         background: 'var(--bg)',
-        paddingBottom: 'env(safe-area-inset-bottom)',
+        // safe-area-inset-bottom alone just barely clears the iOS home
+        // indicator — fine in Safari (the URL bar adds visual buffer)
+        // but cramped when launched from a home-screen bookmark
+        // (standalone PWA). Add 14px on top so the tab labels have real
+        // breathing room above the indicator in both modes.
+        paddingBottom: 'calc(env(safe-area-inset-bottom) + 14px)',
       }}
       aria-label="Primary"
     >

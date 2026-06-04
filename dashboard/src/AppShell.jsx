@@ -138,10 +138,12 @@ export default function AppShell() {
           performance={performance}
           killSwitches={killSwitches}
         />
-        {/* pb-20 keeps the last bit of scrollable content from hiding
+        {/* pb-28 keeps the last bit of scrollable content from hiding
             behind the bottom nav. The nav itself adds safe-area-inset-
-            bottom for the iOS home indicator. */}
-        <main className="flex-1 px-4 py-5 lg:px-6 lg:py-6 pb-24">
+            bottom + a 14px buffer for the iOS home indicator, so we
+            need a slightly taller reserve here than the nav's nominal
+            height alone. */}
+        <main className="flex-1 px-4 py-5 lg:px-6 lg:py-6 pb-28">
           <Outlet />
         </main>
         <BottomNav />
