@@ -73,6 +73,17 @@ export default function OpenPositionCard({ position, livePrice, snapshot }) {
     }
   }, [position.ticker, chartTimeframe])
 
+  // Underlying price at the time this position was opened — the first
+  // bar at or after opened_at gives us a clean snapshot. Falls back to
+  // the first available bar if opened_at is before our lookback window.
+  let underlyingAtEntry = undefined
+  if (bars.length > 0) {
+    const openedAtMs = new Date(position.opened_at).getTime()
+    const matchingBar =
+      bars.find(b => new Date(b.ts).getTime() >= openedAtMs) || bars[0]
+    underlyingAtEntry = Number(matchingBar.open)
+  }
+
   return (
     <article
       className="rounded-card p-5"
@@ -117,7 +128,14 @@ export default function OpenPositionCard({ position, livePrice, snapshot }) {
         </div>
       </div>
 
-      {/* Underlying candle chart — helps decide whether to manually close */}
+      {/* Underlying candle chart — helps decide whether to manually close.
+          We draw a dashed reference line at the underlying's price when
+          THIS position was opened, so the user sees at a glance whether
+          the stock is above/below where they got in. The option-side
+          entry/stop ($1.80/$1.95 territory) doesn't go on this chart —
+          it's on a totally different price scale than the underlying
+          ($300+ territory) and plotting them together would compress the
+          candles into noise. */}
       <div className="mt-4">
         <div className="flex items-center justify-between mb-2">
           <div className="mono-label" style={{ fontSize: 10 }}>
@@ -127,30 +145,22 @@ export default function OpenPositionCard({ position, livePrice, snapshot }) {
         </div>
         <MiniCandlestickChart
           bars={bars}
-          entryPrice={entry}
-          stopPrice={stop}
+          referencePrice={underlyingAtEntry}
           height={140}
           loading={barsLoading}
         />
-        {/* Legend: which line is which */}
-        <div className="mt-2 flex items-center justify-end gap-4 text-fg-dim" style={{ fontSize: 10 }}>
-          <span className="inline-flex items-center gap-1.5">
+        {Number.isFinite(underlyingAtEntry) && (
+          <div className="mt-2 flex items-center justify-end gap-1.5 text-fg-dim" style={{ fontSize: 10 }}>
             <span
               aria-hidden
               className="inline-block"
               style={{ width: 12, height: 0, borderTop: '1px dashed var(--fg-dim)' }}
             />
-            entry
-          </span>
-          <span className="inline-flex items-center gap-1.5">
-            <span
-              aria-hidden
-              className="inline-block"
-              style={{ width: 12, height: 0, borderTop: '1.5px solid var(--accent-amber, #f59e0b)' }}
-            />
-            stop
-          </span>
-        </div>
+            <span>
+              {position.ticker} at entry · ${underlyingAtEntry.toFixed(2)}
+            </span>
+          </div>
+        )}
       </div>
 
       {/* The originating tweet */}

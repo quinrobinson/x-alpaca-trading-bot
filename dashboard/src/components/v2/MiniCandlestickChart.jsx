@@ -2,22 +2,23 @@
  * MiniCandlestickChart — pure SVG OHLC chart for the open-position card.
  *
  * Props:
- *   bars        Array<{open, high, low, close}> oldest-first. Values may
- *               be strings (decimals) or numbers; coerced via Number().
- *   entryPrice  Optional. Renders a dashed horizontal reference line.
- *   stopPrice   Optional. Renders a solid amber reference line.
- *   height      Pixel height. Default 140.
- *   loading     Boolean. When true and no bars yet, renders a thin skeleton.
+ *   bars            Array<{open, high, low, close}> oldest-first. Values
+ *                   may be strings (decimals) or numbers; coerced via
+ *                   Number().
+ *   referencePrice  Optional. Dashed horizontal reference line. Must be
+ *                   on the SAME price scale as the bars (e.g. underlying
+ *                   stock price). Use for "where the underlying was at
+ *                   entry" or similar single-line context.
+ *   height          Pixel height. Default 140.
+ *   loading         Boolean. When true and no bars yet, shows skeleton.
  *
  * The chart is responsive: the SVG uses a viewBox with a fixed nominal
- * width (1000 units) and scales to its container. Reference lines
- * (entry, stop) are included in the y-axis range so they're never
- * clipped at the top or bottom edge.
+ * width (1000 units) and scales to its container. The reference line
+ * is folded into the y-axis range so it can't be clipped at the edge.
  */
 export default function MiniCandlestickChart({
   bars,
-  entryPrice,
-  stopPrice,
+  referencePrice,
   height = 140,
   loading = false,
 }) {
@@ -42,11 +43,10 @@ export default function MiniCandlestickChart({
     close: Number(b.close),
   }))
 
-  // Build the y-axis range from candle extremes PLUS reference lines so
-  // entry/stop are always visible.
+  // Build the y-axis range from candle extremes PLUS the reference line
+  // (if any) so the line can't fall off the chart edge.
   const allValues = ohlc.flatMap((b) => [b.high, b.low])
-  if (Number.isFinite(entryPrice)) allValues.push(entryPrice)
-  if (Number.isFinite(stopPrice)) allValues.push(stopPrice)
+  if (Number.isFinite(referencePrice)) allValues.push(referencePrice)
   const yMin = Math.min(...allValues)
   const yMax = Math.max(...allValues)
   const yRange = yMax - yMin || 1
@@ -69,28 +69,18 @@ export default function MiniCandlestickChart({
       role="img"
       aria-label="Candlestick chart of the underlying"
     >
-      {/* Entry reference — dashed, neutral */}
-      {Number.isFinite(entryPrice) && (
+      {/* Reference line — dashed, neutral. Single line at referencePrice
+          (e.g. underlying-at-entry). Drawn before candles so wicks/bodies
+          render on top of it. */}
+      {Number.isFinite(referencePrice) && (
         <line
           x1={0}
           x2={VIEW_W}
-          y1={y(entryPrice)}
-          y2={y(entryPrice)}
+          y1={y(referencePrice)}
+          y2={y(referencePrice)}
           stroke="var(--fg-dim)"
           strokeWidth="1"
           strokeDasharray="6 4"
-          vectorEffect="non-scaling-stroke"
-        />
-      )}
-      {/* Stop reference — solid, amber */}
-      {Number.isFinite(stopPrice) && (
-        <line
-          x1={0}
-          x2={VIEW_W}
-          y1={y(stopPrice)}
-          y2={y(stopPrice)}
-          stroke="var(--accent-amber, #f59e0b)"
-          strokeWidth="1.25"
           vectorEffect="non-scaling-stroke"
         />
       )}
