@@ -216,9 +216,50 @@ class DataService:
         option_type: OptionType,
         strike: Decimal,
     ) -> Quote | None:
+        """Latest NBBO quote for an option contract.
+
+        Polygon is preferred — it returns the real consolidated NBBO on
+        this account's plan tier. Alpaca's options feed defaults to the
+        "indicative" feed without an OPRA subscription, which prints
+        artificially wide spreads (15-30% on contracts that are actually
+        1-2 cents wide). We fall back to it only when Polygon doesn't
+        return a usable quote.
+        """
+        symbol = build_occ_symbol(ticker, expiration, option_type, strike)
+        polygon_quote = self._polygon_option_quote(symbol)
+        if polygon_quote is not None:
+            return polygon_quote
+        return self._alpaca_option_quote(symbol)
+
+    def _polygon_option_quote(self, contract_symbol: str) -> Quote | None:
+        snapshot = self._polygon_option_snapshot(contract_symbol)
+        if not snapshot:
+            return None
+        last_quote = snapshot.get("last_quote") or {}
+        bid_raw = last_quote.get("bid")
+        ask_raw = last_quote.get("ask")
+        if bid_raw is None or ask_raw is None:
+            return None
+        try:
+            bid = Decimal(str(bid_raw))
+            ask = Decimal(str(ask_raw))
+        except Exception:  # noqa: BLE001
+            return None
+        if bid <= 0 or ask <= 0 or ask < bid:
+            logger.info("Stale/invalid polygon quote for %s: bid=%s ask=%s", contract_symbol, bid, ask)
+            return None
+        mid = (bid + ask) / Decimal(2)
+        spread_pct = (ask - bid) / mid
+        last_updated_ns = last_quote.get("last_updated")
+        if isinstance(last_updated_ns, (int, float)) and last_updated_ns > 0:
+            ts = datetime.fromtimestamp(last_updated_ns / 1_000_000_000, tz=timezone.utc)
+        else:
+            ts = datetime.now(timezone.utc)
+        return Quote(bid=bid, ask=ask, mid=mid, spread_pct=spread_pct, ts=ts)
+
+    def _alpaca_option_quote(self, symbol: str) -> Quote | None:
         from alpaca.data.requests import OptionLatestQuoteRequest
 
-        symbol = build_occ_symbol(ticker, expiration, option_type, strike)
         try:
             req = OptionLatestQuoteRequest(symbol_or_symbols=symbol)
             resp = self._alpaca_options.get_option_latest_quote(req)
