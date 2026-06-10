@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import time
 from dataclasses import asdict, dataclass
 from datetime import date, datetime
@@ -25,7 +26,11 @@ from typing import Any, Literal, Protocol
 logger = logging.getLogger(__name__)
 
 PARSE_PROMPT_VERSION = "v2"  # v2: prompt now includes today's date for unambiguous expiration parsing
-DEFAULT_MODEL = "claude-sonnet-4-20250514"  # from X_ALPACA_OPTIONS_HANDOFF.md §2.2
+# Default to Haiku 4.5 — same schema-extraction accuracy as Sonnet on this
+# task (~50 tokens out, tight rubric) at roughly 3x lower latency. Overridable
+# via PARSER_MODEL env var so the operator can roll back to Sonnet without a
+# code change if accuracy regresses in production.
+DEFAULT_MODEL = os.environ.get("PARSER_MODEL", "claude-haiku-4-5")
 MAX_TOKENS = 512
 
 OptionType = Literal["call", "put"]
