@@ -211,7 +211,7 @@ Next steps you must do manually:
        sudo journalctl -u $SERVICE_NAME -f
 
   4. Sanity check the API:
-       curl http://localhost:$API_PORT/healthz
+       curl http://localhost:$API_PORT/api/healthz
 
   5. Update later:
        sudo bash $INSTALL_DIR/deploy/install.sh --update

@@ -144,7 +144,7 @@ def create_app(
     app.state.config_store = config_store
     app.state.data_service = data_service
 
-    @app.get("/healthz", tags=["meta"])
+    @app.get("/api/healthz", tags=["meta"])
     def healthz() -> JSONResponse:
         last_tick = (
             getattr(orchestrator._state, "last_tick_at", None)
@@ -186,15 +186,19 @@ def create_app(
         status = 200 if orch_alive else 503
         return JSONResponse(content=body, status_code=status)
 
-    app.include_router(positions_router.router)
-    app.include_router(signals_router.router)
-    app.include_router(performance_router.router)
-    app.include_router(timeline_router.router)
-    app.include_router(market_router.router)
-    app.include_router(config_router.router)
-    app.include_router(debug_router.router)
+    # /api prefix on every router keeps the dashboard's SPA routes (e.g.
+    # /timeline, /performance) from colliding with API paths of the same
+    # name. The catch-all SPA fallback used to lose those routes to the
+    # API on cold loads / hard refreshes.
+    app.include_router(positions_router.router, prefix="/api")
+    app.include_router(signals_router.router, prefix="/api")
+    app.include_router(performance_router.router, prefix="/api")
+    app.include_router(timeline_router.router, prefix="/api")
+    app.include_router(market_router.router, prefix="/api")
+    app.include_router(config_router.router, prefix="/api")
+    app.include_router(debug_router.router, prefix="/api")
 
-    @app.websocket("/ws")
+    @app.websocket("/api/ws")
     async def ws_endpoint(websocket: WebSocket) -> None:
         """Push channel for dashboard clients.
 

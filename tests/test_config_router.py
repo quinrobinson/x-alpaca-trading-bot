@@ -52,7 +52,7 @@ def _client(conn: psycopg.Connection) -> TestClient:
 
 def test_get_config_returns_current_values(conn: psycopg.Connection) -> None:
     with _client(conn) as client:
-        r = client.get("/config")
+        r = client.get("/api/config")
     assert r.status_code == 200
     body = r.json()
     assert body == {
@@ -65,7 +65,7 @@ def test_get_config_returns_current_values(conn: psycopg.Connection) -> None:
 
 def test_patch_config_updates_single_field(conn: psycopg.Connection) -> None:
     with _client(conn) as client:
-        r = client.patch("/config", json={"max_position_spend_usd": "750"})
+        r = client.patch("/api/config", json={"max_position_spend_usd": "750"})
     assert r.status_code == 200
     assert r.json()["max_position_spend_usd"] == "750.00"
     # Untouched fields stay at default.
@@ -74,8 +74,7 @@ def test_patch_config_updates_single_field(conn: psycopg.Connection) -> None:
 
 def test_patch_config_updates_multiple_fields(conn: psycopg.Connection) -> None:
     with _client(conn) as client:
-        r = client.patch(
-            "/config",
+        r = client.patch("/api/config",
             json={
                 "max_position_spend_usd": "1000",
                 "max_qty_per_position": 5,
@@ -94,31 +93,30 @@ def test_patch_config_updates_multiple_fields(conn: psycopg.Connection) -> None:
 def test_patch_config_persists_across_clients(conn: psycopg.Connection) -> None:
     """Two clients (separate stores) reading the same DB see each other's writes."""
     with _client(conn) as client:
-        client.patch("/config", json={"disable_x_stream": True})
+        client.patch("/api/config", json={"disable_x_stream": True})
     # Build a new app pointing at the same DB; the fresh store reads persisted state.
     with _client(conn) as client2:
-        r = client2.get("/config")
+        r = client2.get("/api/config")
     assert r.json()["disable_x_stream"] is True
 
 
 def test_patch_config_rejects_out_of_bounds(conn: psycopg.Connection) -> None:
     with _client(conn) as client:
-        r = client.patch("/config", json={"max_position_spend_usd": "999999"})
+        r = client.patch("/api/config", json={"max_position_spend_usd": "999999"})
     assert r.status_code == 422
     assert "max_position_spend_usd" in r.json()["detail"]
 
 
 def test_patch_config_rejects_unknown_field(conn: psycopg.Connection) -> None:
     with _client(conn) as client:
-        r = client.patch("/config", json={"nope": 1})
+        r = client.patch("/api/config", json={"nope": 1})
     assert r.status_code == 422
 
 
 def test_patch_config_accepts_numeric_decimal(conn: psycopg.Connection) -> None:
     """Dashboard sends floats from a number input; the API should coerce."""
     with _client(conn) as client:
-        r = client.patch(
-            "/config",
+        r = client.patch("/api/config",
             json={"max_position_spend_usd": 250.5, "daily_loss_kill_pct": 0.025},
         )
     assert r.status_code == 200
@@ -130,5 +128,5 @@ def test_get_config_returns_503_when_store_not_wired() -> None:
     """If create_app is called without config_store= the endpoint surfaces it."""
     app = create_app(conn=None, config_store=None)
     with TestClient(app) as client:
-        r = client.get("/config")
+        r = client.get("/api/config")
     assert r.status_code == 503

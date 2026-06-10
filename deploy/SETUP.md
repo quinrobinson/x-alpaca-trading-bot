@@ -90,7 +90,7 @@ sudo journalctl -u x-alpaca-bot -f
 
 Sanity check the API and dashboard locally:
 ```bash
-curl http://localhost:8000/healthz          # → {"ok": true, ...}
+curl http://localhost:8000/api/healthz      # → {"ok": true, ...}
 curl -I http://localhost:8000/              # → 200, text/html (the SPA)
 ```
 
@@ -153,7 +153,7 @@ To verify protection: open the URL in an incognito window. You should get the lo
 In the authenticated browser, open `https://x-alpaca-bot.your-zone.dev`:
 - Header shows the brand mark + wordmark, status pill `running`
 - Timeline empty (or populated if signals have arrived)
-- Network tab: `/healthz`, `/positions`, `/timeline`, `/performance` all return 200; `/ws` returns `101 Switching Protocols`
+- Network tab: `/api/healthz`, `/api/positions`, `/api/timeline`, `/api/performance` all return 200; `/api/ws` returns `101 Switching Protocols`
 
 On the droplet:
 ```bash
@@ -220,10 +220,10 @@ sudo systemctl restart x-alpaca-bot
 Tail logs (`journalctl -u x-alpaca-bot -n 50`). Most common cause: `.env` is missing a required var.
 
 **Browser loads dashboard but the WebSocket reconnects every few seconds.**
-With Cloudflare Tunnel this is usually a session timeout on `/ws`. Increase the Access app session duration, or check that the tunnel config doesn't have a `connectTimeout` set lower than expected.
+With Cloudflare Tunnel this is usually a session timeout on `/api/ws`. Increase the Access app session duration, or check that the tunnel config doesn't have a `connectTimeout` set lower than expected.
 
 **Dashboard shows everything as "—" after login.**
-Open Network tab. If `/healthz` returns 200 but other endpoints return HTML (the Access login page), your session cookie expired mid-fetch. Reload the page.
+Open Network tab. If `/api/healthz` returns 200 but other endpoints return HTML (the Access login page), your session cookie expired mid-fetch. Reload the page.
 
 **Local dev can't hit the same-origin API.**
 That's expected — local dev uses Vite's proxy. Run `cd dashboard && npm run dev` and visit `http://localhost:5173`. The proxy in `vite.config.js` forwards to `localhost:8000` where you should also be running `uvicorn api.main:build_production_app --factory --reload`.

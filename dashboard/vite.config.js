@@ -10,17 +10,13 @@ export default defineConfig({
   server: {
     port: 5173,
     proxy: {
-      '/healthz': 'http://localhost:8000',
-      '/positions': 'http://localhost:8000',
-      '/signals': 'http://localhost:8000',
-      '/performance': 'http://localhost:8000',
-      '/timeline': 'http://localhost:8000',
-      '/config': 'http://localhost:8000',
-      '/ws': {
+      // Every API path lives under /api (see dashboard/src/config.js).
+      '/api/ws': {
         target: 'ws://localhost:8000',
         ws: true,
         changeOrigin: true,
       },
+      '/api': 'http://localhost:8000',
     },
   },
   test: {

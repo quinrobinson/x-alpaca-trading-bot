@@ -166,7 +166,7 @@ def test_healthz_returns_ok() -> None:
     orch = FakeOrchestrator()
     app = create_app(conn=None, orchestrator=orch)
     with TestClient(app) as client:
-        r = client.get("/healthz")
+        r = client.get("/api/healthz")
         assert r.status_code == 200
         body = r.json()
         assert body["ok"] is True
@@ -179,7 +179,7 @@ def test_positions_empty_returns_empty_list() -> None:
     orch = FakeOrchestrator()
     app = create_app(conn=None, orchestrator=orch)
     with TestClient(app) as client:
-        r = client.get("/positions")
+        r = client.get("/api/positions")
         assert r.status_code == 200
         assert r.json() == []
 
@@ -199,7 +199,7 @@ def test_positions_returns_orchestrator_state() -> None:
 
     app = create_app(conn=None, orchestrator=orch)
     with TestClient(app) as client:
-        r = client.get("/positions")
+        r = client.get("/api/positions")
         assert r.status_code == 200
         body = r.json()
         assert len(body) == 1
@@ -240,7 +240,7 @@ def test_close_position_returns_202_on_success() -> None:
     orch = _FakeOrchWithManualClose()
     app = create_app(conn=None, orchestrator=orch)
     with TestClient(app) as client:
-        r = client.post("/positions/42/close")
+        r = client.post("/api/positions/42/close")
         assert r.status_code == 202
         body = r.json()
         assert body["ok"] is True
@@ -253,7 +253,7 @@ def test_close_position_returns_404_when_not_open() -> None:
     orch.next_response = {"ok": False, "reason": "not_open", "signal_id": 99}
     app = create_app(conn=None, orchestrator=orch)
     with TestClient(app) as client:
-        r = client.post("/positions/99/close")
+        r = client.post("/api/positions/99/close")
         assert r.status_code == 404
         assert r.json()["reason"] == "not_open"
 
@@ -261,7 +261,7 @@ def test_close_position_returns_404_when_not_open() -> None:
 def test_close_position_returns_503_when_orchestrator_missing() -> None:
     app = create_app(conn=None, orchestrator=None)
     with TestClient(app) as client:
-        r = client.post("/positions/1/close")
+        r = client.post("/api/positions/1/close")
         assert r.status_code == 503
 
 
@@ -313,7 +313,7 @@ def test_market_bars_returns_serialized_ohlc() -> None:
     ]
     app = create_app(conn=None, orchestrator=FakeOrchestrator(), data_service=ds)
     with TestClient(app) as client:
-        r = client.get("/market/bars?ticker=aapl&timeframe=5m&limit=2")
+        r = client.get("/api/market/bars?ticker=aapl&timeframe=5m&limit=2")
         assert r.status_code == 200
         body = r.json()
         assert len(body) == 2
@@ -334,7 +334,7 @@ def test_market_bars_rejects_unknown_timeframe() -> None:
     ds = _FakeDataService()
     app = create_app(conn=None, orchestrator=FakeOrchestrator(), data_service=ds)
     with TestClient(app) as client:
-        r = client.get("/market/bars?ticker=AAPL&timeframe=99m")
+        r = client.get("/api/market/bars?ticker=AAPL&timeframe=99m")
         assert r.status_code == 400
         assert ds.calls == []  # never reached the data_service
 
@@ -342,7 +342,7 @@ def test_market_bars_rejects_unknown_timeframe() -> None:
 def test_market_bars_returns_503_without_data_service() -> None:
     app = create_app(conn=None, orchestrator=FakeOrchestrator(), data_service=None)
     with TestClient(app) as client:
-        r = client.get("/market/bars?ticker=AAPL&timeframe=5m")
+        r = client.get("/api/market/bars?ticker=AAPL&timeframe=5m")
         assert r.status_code == 503
 
 
@@ -352,10 +352,10 @@ def test_market_bars_caps_limit() -> None:
     app = create_app(conn=None, orchestrator=FakeOrchestrator(), data_service=ds)
     with TestClient(app) as client:
         # Too big — must reject before calling the data_service.
-        r = client.get("/market/bars?ticker=AAPL&timeframe=5m&limit=500")
+        r = client.get("/api/market/bars?ticker=AAPL&timeframe=5m&limit=500")
         assert r.status_code == 422
         # Too small.
-        r = client.get("/market/bars?ticker=AAPL&timeframe=5m&limit=0")
+        r = client.get("/api/market/bars?ticker=AAPL&timeframe=5m&limit=0")
         assert r.status_code == 422
 
 
@@ -368,7 +368,7 @@ def test_signals_returns_recent_history(conn: psycopg.Connection) -> None:
     orch = FakeOrchestrator()
     app = create_app(conn=conn, orchestrator=orch)
     with TestClient(app) as client:
-        r = client.get("/signals")
+        r = client.get("/api/signals")
         assert r.status_code == 200
         rows = r.json()
         assert len(rows) == 2
@@ -385,7 +385,7 @@ def test_signals_respects_limit(conn: psycopg.Connection) -> None:
     orch = FakeOrchestrator()
     app = create_app(conn=conn, orchestrator=orch)
     with TestClient(app) as client:
-        r = client.get("/signals?limit=2")
+        r = client.get("/api/signals?limit=2")
         assert r.status_code == 200
         assert len(r.json()) == 2
 
@@ -396,7 +396,7 @@ def test_performance_empty_returns_zero_stats(conn: psycopg.Connection) -> None:
     orch = FakeOrchestrator()
     app = create_app(conn=conn, orchestrator=orch)
     with TestClient(app) as client:
-        r = client.get("/performance")
+        r = client.get("/api/performance")
         assert r.status_code == 200
         body = r.json()
         assert body["trades"] == []
@@ -422,7 +422,7 @@ def test_performance_aggregates_correctly(conn: psycopg.Connection) -> None:
     orch = FakeOrchestrator()
     app = create_app(conn=conn, orchestrator=orch)
     with TestClient(app) as client:
-        r = client.get("/performance")
+        r = client.get("/api/performance")
         body = r.json()
         stats = body["stats"]
         assert stats["total_trades"] == 5
@@ -442,7 +442,7 @@ def test_ws_echoes_pings() -> None:
     orch = FakeOrchestrator()
     app = create_app(conn=None, orchestrator=orch, heartbeat_seconds=999)
     with TestClient(app) as client:
-        with client.websocket_connect("/ws") as ws:
+        with client.websocket_connect("/api/ws") as ws:
             ws.send_text("hello")
             msg = ws.receive_json()
             assert msg["event"] == "pong"
@@ -453,7 +453,7 @@ def test_ws_receives_broadcast_from_manager() -> None:
     orch = FakeOrchestrator()
     app = create_app(conn=None, orchestrator=orch, heartbeat_seconds=999)
     with TestClient(app) as client:
-        with client.websocket_connect("/ws") as ws:
+        with client.websocket_connect("/api/ws") as ws:
             ws_manager = app.state.ws_manager
             # Schedule a broadcast through dispatch_threadsafe — this is
             # exactly the path the orchestrator uses.
@@ -467,8 +467,8 @@ def test_ws_multiple_clients_each_receive_broadcast() -> None:
     orch = FakeOrchestrator()
     app = create_app(conn=None, orchestrator=orch, heartbeat_seconds=999)
     with TestClient(app) as client:
-        with client.websocket_connect("/ws") as ws1, \
-             client.websocket_connect("/ws") as ws2:
+        with client.websocket_connect("/api/ws") as ws1, \
+             client.websocket_connect("/api/ws") as ws2:
             ws_manager = app.state.ws_manager
             ws_manager.dispatch_threadsafe("signal.validated", {"signal_id": 5})
             m1 = ws1.receive_json()
@@ -481,7 +481,7 @@ def test_ws_disconnect_removes_from_clients() -> None:
     orch = FakeOrchestrator()
     app = create_app(conn=None, orchestrator=orch, heartbeat_seconds=999)
     with TestClient(app) as client:
-        with client.websocket_connect("/ws") as ws:
+        with client.websocket_connect("/api/ws") as ws:
             ws.send_text("ping")
             ws.receive_json()
             assert app.state.ws_manager.client_count == 1
@@ -500,10 +500,10 @@ def test_ws_reconnect_then_receives() -> None:
     orch = FakeOrchestrator()
     app = create_app(conn=None, orchestrator=orch, heartbeat_seconds=999)
     with TestClient(app) as client:
-        with client.websocket_connect("/ws") as ws1:
+        with client.websocket_connect("/api/ws") as ws1:
             ws1.send_text("x")
             ws1.receive_json()
-        with client.websocket_connect("/ws") as ws2:
+        with client.websocket_connect("/api/ws") as ws2:
             app.state.ws_manager.dispatch_threadsafe("trade.stop_moved", {"new_stop": "2.55"})
             msg = ws2.receive_json()
             assert msg["event"] == "trade.stop_moved"
@@ -517,7 +517,7 @@ def test_timeline_empty(conn: psycopg.Connection) -> None:
     orch = FakeOrchestrator()
     app = create_app(conn=conn, orchestrator=orch, heartbeat_seconds=999)
     with TestClient(app) as client:
-        r = client.get("/timeline")
+        r = client.get("/api/timeline")
         assert r.status_code == 200
         assert r.json() == []
 
@@ -605,7 +605,7 @@ def test_timeline_classifies_kinds_correctly(conn: psycopg.Connection) -> None:
     orch = FakeOrchestrator()
     app = create_app(conn=conn, orchestrator=orch, heartbeat_seconds=999)
     with TestClient(app) as client:
-        rows = client.get("/timeline").json()
+        rows = client.get("/api/timeline").json()
 
     # Most recent first → NVDA, TSLA, AAPL, then commentary
     assert [r["kind"] for r in rows] == [
@@ -653,8 +653,8 @@ def test_timeline_excludes_rejected_when_requested(conn: psycopg.Connection) -> 
     orch = FakeOrchestrator()
     app = create_app(conn=conn, orchestrator=orch, heartbeat_seconds=999)
     with TestClient(app) as client:
-        with_rej = client.get("/timeline?include_rejected=true").json()
-        without = client.get("/timeline?include_rejected=false").json()
+        with_rej = client.get("/api/timeline?include_rejected=true").json()
+        without = client.get("/api/timeline?include_rejected=false").json()
     assert len(with_rej) == 1 and with_rej[0]["kind"] == "signal_rejected"
     assert without == []
 
@@ -691,7 +691,7 @@ def test_positions_includes_source_post(conn: psycopg.Connection) -> None:
 
     app = create_app(conn=conn, orchestrator=orch, heartbeat_seconds=999)
     with TestClient(app) as client:
-        body = client.get("/positions").json()
+        body = client.get("/api/positions").json()
     assert len(body) == 1
     assert body[0]["source_post"]["post_text"] == "$AAPL 6/20 $185c @ 2.50"
     # Same instant regardless of TZ rendering — parse and compare epoch
@@ -707,7 +707,7 @@ def test_inject_post_disabled_when_token_unset(monkeypatch) -> None:
     orch = FakeOrchestrator()
     app = create_app(conn=None, orchestrator=orch, heartbeat_seconds=999)
     with TestClient(app) as client:
-        r = client.post("/debug/inject-post", json={"post_text": "x"})
+        r = client.post("/api/debug/inject-post", json={"post_text": "x"})
         assert r.status_code == 503
         assert "disabled" in r.json()["detail"]
 
@@ -717,7 +717,7 @@ def test_inject_post_requires_auth_header(monkeypatch) -> None:
     orch = FakeOrchestrator()
     app = create_app(conn=None, orchestrator=orch, heartbeat_seconds=999)
     with TestClient(app) as client:
-        r = client.post("/debug/inject-post", json={"post_text": "x"})
+        r = client.post("/api/debug/inject-post", json={"post_text": "x"})
         assert r.status_code == 401
 
 
@@ -726,8 +726,7 @@ def test_inject_post_rejects_wrong_token(monkeypatch) -> None:
     orch = FakeOrchestrator()
     app = create_app(conn=None, orchestrator=orch, heartbeat_seconds=999)
     with TestClient(app) as client:
-        r = client.post(
-            "/debug/inject-post",
+        r = client.post("/api/debug/inject-post",
             headers={"Authorization": "Bearer wrong"},
             json={"post_text": "x"},
         )
@@ -739,8 +738,7 @@ def test_inject_post_pushes_to_orchestrator(monkeypatch) -> None:
     orch = FakeOrchestrator()
     app = create_app(conn=None, orchestrator=orch, heartbeat_seconds=999)
     with TestClient(app) as client:
-        r = client.post(
-            "/debug/inject-post",
+        r = client.post("/api/debug/inject-post",
             headers={"Authorization": "Bearer supersecret"},
             json={
                 "post_text": "$AAPL 6/20 $185c @ 2.50",
@@ -766,8 +764,7 @@ def test_inject_post_generates_post_id_when_missing(monkeypatch) -> None:
     orch = FakeOrchestrator()
     app = create_app(conn=None, orchestrator=orch, heartbeat_seconds=999)
     with TestClient(app) as client:
-        r = client.post(
-            "/debug/inject-post",
+        r = client.post("/api/debug/inject-post",
             headers={"Authorization": "Bearer supersecret"},
             json={"post_text": "$AAPL test"},
         )
@@ -780,8 +777,7 @@ def test_inject_post_rejects_missing_post_text(monkeypatch) -> None:
     orch = FakeOrchestrator()
     app = create_app(conn=None, orchestrator=orch, heartbeat_seconds=999)
     with TestClient(app) as client:
-        r = client.post(
-            "/debug/inject-post",
+        r = client.post("/api/debug/inject-post",
             headers={"Authorization": "Bearer supersecret"},
             json={"post_id": "x-only"},
         )
@@ -793,8 +789,7 @@ def test_inject_post_rejects_invalid_posted_at(monkeypatch) -> None:
     orch = FakeOrchestrator()
     app = create_app(conn=None, orchestrator=orch, heartbeat_seconds=999)
     with TestClient(app) as client:
-        r = client.post(
-            "/debug/inject-post",
+        r = client.post("/api/debug/inject-post",
             headers={"Authorization": "Bearer supersecret"},
             json={"post_text": "x", "posted_at": "not-a-date"},
         )
@@ -806,7 +801,7 @@ def test_orchestrator_broadcast_wired_to_ws_manager() -> None:
     orch = FakeOrchestrator()
     app = create_app(conn=None, orchestrator=orch, heartbeat_seconds=999)
     with TestClient(app) as client:
-        with client.websocket_connect("/ws") as ws:
+        with client.websocket_connect("/api/ws") as ws:
             # Simulate the orchestrator firing an event from its thread.
             orch._broadcast("trade.exited", {"signal_id": 1, "reason": "stop_loss"})
             msg = ws.receive_json()
