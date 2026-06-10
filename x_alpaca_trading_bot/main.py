@@ -294,6 +294,10 @@ class Orchestrator:
         self._open_positions: dict[int, PositionRecord] = {}
         self._state = OrchestratorState()
         self._shutdown_event = threading.Event()
+        # Set by the stream callback and the manual-close API so the run
+        # loop wakes immediately instead of waiting up to tick_seconds.
+        # request_shutdown() also sets it so shutdown is responsive.
+        self._wake_event = threading.Event()
         self._stream_listener: Any = None
         self._lock = threading.Lock()
 
@@ -330,7 +334,11 @@ class Orchestrator:
             logger.info("orchestrator running; tick=%ss", self._tick_seconds)
             while not self._shutdown_event.is_set():
                 self.tick(datetime.now(timezone.utc))
-                self._shutdown_event.wait(timeout=self._tick_seconds)
+                # Either a wake or the tick interval ends the wait — the
+                # wake fires on new stream posts and manual-close requests,
+                # collapsing the queue-to-tick lag from 0-5s down to ~ms.
+                self._wake_event.wait(timeout=self._tick_seconds)
+                self._wake_event.clear()
         except Exception:
             logger.exception("orchestrator crashed")
             return 1
@@ -342,6 +350,9 @@ class Orchestrator:
     def request_shutdown(self) -> None:
         logger.info("shutdown requested")
         self._shutdown_event.set()
+        # Wake the run loop so it doesn't sit out the rest of the tick
+        # interval before noticing shutdown.
+        self._wake_event.set()
 
     # ---- The tick (testable) ------------------------------------------
 
@@ -692,6 +703,7 @@ class Orchestrator:
         with self._lock:
             self._state.last_x_received_at = received_at
         self._post_queue.put(_StreamEvent(post_id, post_text, posted_at, received_at))
+        self._wake_event.set()
 
     def _on_stream_connected(self) -> None:
         """Heartbeat-bump callback for both tweepy events:
@@ -1213,6 +1225,7 @@ class Orchestrator:
         self._manual_close_queue.put(
             _ManualCloseRequest(signal_id, datetime.now(timezone.utc))
         )
+        self._wake_event.set()
         logger.info(
             "manual close queued for signal_id=%s ticker=%s qty=%s",
             signal_id, ticker, qty,

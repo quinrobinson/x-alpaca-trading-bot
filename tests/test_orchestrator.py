@@ -513,6 +513,40 @@ def test_orchestrator_on_stream_connected_bumps_heartbeat(conn: psycopg.Connecti
     assert orch._post_queue.qsize() == 0
 
 
+def test_on_x_post_sets_wake_event_so_tick_loop_runs_immediately(
+    conn: psycopg.Connection,
+) -> None:
+    """A fresh post must wake the run loop instead of waiting up to
+    tick_seconds for the next interval. This is the single biggest
+    contributor to signal-to-order latency."""
+    orch, _, _ = _orch(conn=conn, seed_heartbeats=False)
+    assert not orch._wake_event.is_set()
+    orch._on_x_post("post-A", "ignored body", NOW_UTC - timedelta(seconds=30))
+    assert orch._wake_event.is_set()
+
+
+def test_on_stream_connected_does_not_wake_tick_loop(conn: psycopg.Connection) -> None:
+    """Connection-state heartbeats have no work for the tick to do, so
+    they must not wake the loop early — that would defeat the tick
+    interval and spin the loop on every TCP keep-alive."""
+    orch, _, _ = _orch(conn=conn, seed_heartbeats=False)
+    assert not orch._wake_event.is_set()
+    orch._on_stream_connected()
+    assert not orch._wake_event.is_set()
+
+
+def test_request_shutdown_sets_both_events(conn: psycopg.Connection) -> None:
+    """Shutdown must wake the run loop too, otherwise it could sit in
+    `_wake_event.wait()` for the rest of the tick interval before
+    noticing `_shutdown_event`."""
+    orch, _, _ = _orch(conn=conn, seed_heartbeats=False)
+    assert not orch._shutdown_event.is_set()
+    assert not orch._wake_event.is_set()
+    orch.request_shutdown()
+    assert orch._shutdown_event.is_set()
+    assert orch._wake_event.is_set()
+
+
 class _StubNotifier:
     """Records each notify_* call so tests can assert the right one fired."""
 
