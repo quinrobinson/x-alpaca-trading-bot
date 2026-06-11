@@ -238,6 +238,134 @@ def test_gate_results_to_dict_round_trip_friendly() -> None:
             assert isinstance(gate["measured"], str)
 
 
+# ---- entry_iv gate ----
+
+@dataclass
+class _ProviderWithSpot(FakeProvider):
+    """Same as FakeProvider but returns a configurable underlying spot.
+
+    Needed because the entry_iv gate calls provider.get_underlying_price to
+    back-solve IV via Black-Scholes.
+    """
+
+    spot: Decimal | None = None
+
+    def get_underlying_price(self, ticker: str) -> Decimal | None:
+        return self.spot
+
+
+def test_entry_iv_gate_absent_when_threshold_unset() -> None:
+    """Default behaviour — five gates, no entry_iv."""
+    provider = FakeProvider(market_open=True, quote=_good_quote())
+    result = validate(
+        _signal(),
+        provider,
+        NOW,
+        signal_stale_seconds=180,
+        price_deviation_pct=Decimal("0.10"),
+    )
+    assert len(result.gate_results) == 5
+    assert all(g.name != "entry_iv" for g in result.gate_results)
+
+
+def test_entry_iv_gate_present_when_threshold_set() -> None:
+    """Gate appears as the 6th entry once max_entry_iv is configured."""
+    provider = _ProviderWithSpot(
+        market_open=True, quote=_good_quote(), spot=Decimal("185.00")
+    )
+    result = validate(
+        _signal(),
+        provider,
+        NOW,
+        signal_stale_seconds=180,
+        price_deviation_pct=Decimal("0.10"),
+        max_entry_iv=Decimal("1.50"),
+    )
+    assert len(result.gate_results) == 6
+    assert result.gate_results[-1].name == "entry_iv"
+
+
+def test_entry_iv_gate_rejects_when_iv_exceeds_threshold() -> None:
+    """An ATM option priced at ~30% of spot implies very high IV — well above
+    a 1.50 ceiling — so the gate must reject."""
+    quote = Quote(
+        bid=Decimal("55.00"),
+        ask=Decimal("57.00"),
+        mid=Decimal("56.00"),
+        spread_pct=Decimal("0.036"),
+        ts=NOW,
+    )
+    provider = _ProviderWithSpot(
+        market_open=True, quote=quote, spot=Decimal("185.00")
+    )
+    result = validate(
+        _signal(posted_price=Decimal("56.00")),
+        provider,
+        NOW,
+        signal_stale_seconds=180,
+        price_deviation_pct=Decimal("1.00"),  # generous so price_dev passes
+        max_entry_iv=Decimal("1.50"),
+    )
+    iv_gate = next(g for g in result.gate_results if g.name == "entry_iv")
+    assert iv_gate.passed is False
+    assert result.rejection_reason == "entry_iv"
+
+
+def test_entry_iv_gate_passes_when_iv_within_threshold() -> None:
+    """A reasonably-priced ATM option (~3% of spot) implies a moderate IV
+    that should sit well under a 1.50 ceiling."""
+    provider = _ProviderWithSpot(
+        market_open=True, quote=_good_quote(), spot=Decimal("185.00")
+    )
+    result = validate(
+        _signal(),
+        provider,
+        NOW,
+        signal_stale_seconds=180,
+        price_deviation_pct=Decimal("0.10"),
+        max_entry_iv=Decimal("1.50"),
+    )
+    iv_gate = next(g for g in result.gate_results if g.name == "entry_iv")
+    assert iv_gate.passed is True
+    assert result.accepted is True
+
+
+def test_entry_iv_gate_fails_open_when_spot_unavailable() -> None:
+    """If the underlying spot fetch returns None we can't solve IV — pass
+    with reason 'iv_unavailable' rather than silently reject the signal."""
+    # FakeProvider's get_underlying_price returns None, so the IV solver
+    # returns None.
+    provider = FakeProvider(market_open=True, quote=_good_quote())
+    result = validate(
+        _signal(),
+        provider,
+        NOW,
+        signal_stale_seconds=180,
+        price_deviation_pct=Decimal("0.10"),
+        max_entry_iv=Decimal("1.50"),
+    )
+    iv_gate = next(g for g in result.gate_results if g.name == "entry_iv")
+    assert iv_gate.passed is True
+    assert iv_gate.reason == "iv_unavailable"
+
+
+def test_entry_iv_gate_records_no_quote_when_contract_missing() -> None:
+    """contract_exists fails -> entry_iv also flagged with reason='no_quote'
+    so the gate_results sequence stays uniform for downstream analysis."""
+    provider = _ProviderWithSpot(market_open=True, quote=None, spot=Decimal("185.00"))
+    result = validate(
+        _signal(),
+        provider,
+        NOW,
+        signal_stale_seconds=180,
+        price_deviation_pct=Decimal("0.10"),
+        max_entry_iv=Decimal("1.50"),
+    )
+    iv_gate = next(g for g in result.gate_results if g.name == "entry_iv")
+    assert iv_gate.passed is False
+    assert iv_gate.reason == "no_quote"
+
+
 # ---- OCC symbol helper (lives in data_service but exercised here too) ----
 
 def test_build_occ_symbol_format() -> None:

@@ -787,6 +787,7 @@ class Orchestrator:
             now,
             signal_stale_seconds=self._cfg.signal_stale_seconds,
             price_deviation_pct=self._cfg.price_deviation_pct,
+            max_entry_iv=self._cfg.max_entry_iv,
         )
         self._state.last_alpaca_ok_at = now
         signal_id = journal.insert_signal(

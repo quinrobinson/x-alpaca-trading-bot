@@ -64,6 +64,12 @@ class Config:
     signal_stale_seconds: int
     price_deviation_pct: Decimal
 
+    # Optional IV ceiling at entry. None disables the gate. Driven by early
+    # pattern analysis showing losers had ~15-point higher median IV than
+    # winners — re-evaluate at N=50+ closed trades before promoting from
+    # operator-toggled to a hard default.
+    max_entry_iv: Decimal | None = None
+
     # Operator switches
     disable_x_stream: bool = False        # skip X stream connect + suppress x_stream kill switch
 
@@ -107,5 +113,10 @@ class Config:
             max_fill_wait_seconds=int(os.environ.get("MAX_FILL_WAIT_SECONDS", "60")),
             signal_stale_seconds=int(os.environ.get("SIGNAL_STALE_SECONDS", "180")),
             price_deviation_pct=Decimal(os.environ.get("PRICE_DEVIATION_PCT", "0.10")),
+            max_entry_iv=(
+                Decimal(os.environ["MAX_ENTRY_IV"])
+                if os.environ.get("MAX_ENTRY_IV", "").strip()
+                else None
+            ),
             disable_x_stream=os.environ.get("DISABLE_X_STREAM", "").lower() in ("1", "true", "yes"),
         )
