@@ -218,18 +218,19 @@ class DataService:
     ) -> Quote | None:
         """Latest NBBO quote for an option contract.
 
-        Polygon is preferred — it returns the real consolidated NBBO on
-        this account's plan tier. Alpaca's options feed defaults to the
-        "indicative" feed without an OPRA subscription, which prints
-        artificially wide spreads (15-30% on contracts that are actually
-        1-2 cents wide). We fall back to it only when Polygon doesn't
-        return a usable quote.
+        Alpaca with the OPRA feed is the source of truth — it returns
+        real consolidated NBBO under the Algo Trader Plus subscription.
+        Polygon stays as a backup for the unlikely case where Alpaca's
+        options endpoint is unavailable; on the free Polygon tier it
+        will simply 403 and we move on. Order is Alpaca first because
+        Polygon's free tier doesn't return last_quote on the snapshot
+        endpoint, so the call would always fall through anyway.
         """
         symbol = build_occ_symbol(ticker, expiration, option_type, strike)
-        polygon_quote = self._polygon_option_quote(symbol)
-        if polygon_quote is not None:
-            return polygon_quote
-        return self._alpaca_option_quote(symbol)
+        alpaca_quote = self._alpaca_option_quote(symbol)
+        if alpaca_quote is not None:
+            return alpaca_quote
+        return self._polygon_option_quote(symbol)
 
     def _polygon_option_quote(self, contract_symbol: str) -> Quote | None:
         snapshot = self._polygon_option_snapshot(contract_symbol)
@@ -258,10 +259,18 @@ class DataService:
         return Quote(bid=bid, ask=ask, mid=mid, spread_pct=spread_pct, ts=ts)
 
     def _alpaca_option_quote(self, symbol: str) -> Quote | None:
+        from alpaca.data.enums import OptionsFeed
         from alpaca.data.requests import OptionLatestQuoteRequest
 
         try:
-            req = OptionLatestQuoteRequest(symbol_or_symbols=symbol)
+            # OPRA is the real consolidated NBBO; without this argument
+            # Alpaca defaults to the "indicative" feed, which prints
+            # spreads 3-5x wider than the actual NBBO and was rejecting
+            # most signals through the spread gate.
+            req = OptionLatestQuoteRequest(
+                symbol_or_symbols=symbol,
+                feed=OptionsFeed.OPRA,
+            )
             resp = self._alpaca_options.get_option_latest_quote(req)
             q = resp.get(symbol) if isinstance(resp, dict) else None
             if q is None:

@@ -107,47 +107,47 @@ def test_polygon_quote_falls_back_to_now_when_timestamp_missing() -> None:
 # ---- get_option_quote routing ---------------------------------------------
 
 
-def test_get_option_quote_prefers_polygon_when_available() -> None:
+def test_get_option_quote_prefers_alpaca_when_available() -> None:
     svc = _bare_service()
-    polygon_quote = Quote(
+    alpaca_quote = Quote(
         bid=Decimal("1.35"),
         ask=Decimal("1.40"),
         mid=Decimal("1.375"),
         spread_pct=Decimal("0.0364"),
         ts=datetime.now(timezone.utc),
     )
-    svc._polygon_option_quote = lambda sym: polygon_quote
+    svc._alpaca_option_quote = lambda sym: alpaca_quote
 
-    alpaca_called = False
+    polygon_called = False
 
-    def _alpaca_should_not_run(sym: str) -> Quote | None:
-        nonlocal alpaca_called
-        alpaca_called = True
+    def _polygon_should_not_run(sym: str) -> Quote | None:
+        nonlocal polygon_called
+        polygon_called = True
         return None
 
-    svc._alpaca_option_quote = _alpaca_should_not_run
+    svc._polygon_option_quote = _polygon_should_not_run
 
     result = svc.get_option_quote(*_signal_args())
 
-    assert result is polygon_quote
-    assert alpaca_called is False
+    assert result is alpaca_quote
+    assert polygon_called is False
 
 
-def test_get_option_quote_falls_back_to_alpaca_when_polygon_returns_none() -> None:
+def test_get_option_quote_falls_back_to_polygon_when_alpaca_returns_none() -> None:
     svc = _bare_service()
-    alpaca_quote = Quote(
+    polygon_quote = Quote(
         bid=Decimal("1.20"),
         ask=Decimal("1.60"),
         mid=Decimal("1.40"),
         spread_pct=Decimal("0.2857"),
         ts=datetime.now(timezone.utc),
     )
-    svc._polygon_option_quote = lambda sym: None
-    svc._alpaca_option_quote = lambda sym: alpaca_quote
+    svc._alpaca_option_quote = lambda sym: None
+    svc._polygon_option_quote = lambda sym: polygon_quote
 
     result = svc.get_option_quote(*_signal_args())
 
-    assert result is alpaca_quote
+    assert result is polygon_quote
 
 
 def test_get_option_quote_returns_none_when_both_sources_fail() -> None:
@@ -171,8 +171,10 @@ class _FakeAlpacaQuote:
 class _FakeAlpacaOptionsClient:
     def __init__(self, quote_by_symbol: dict[str, _FakeAlpacaQuote | None]) -> None:
         self._quotes = quote_by_symbol
+        self.last_request = None
 
     def get_option_latest_quote(self, req):
+        self.last_request = req
         sym = req.symbol_or_symbols
         if sym not in self._quotes:
             return {}
