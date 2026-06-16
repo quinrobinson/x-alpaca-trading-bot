@@ -654,7 +654,7 @@ class Orchestrator:
         try:
             self._stream_listener = make_listener(
                 bearer_token=self._cfg.x_bearer_token,
-                target_account_id=self._cfg.x_target_account_id,
+                target_account_ids=self._cfg.x_target_account_ids,
                 on_post=self._on_x_post,
                 on_connect=self._on_stream_connected,
                 # X sends a keep-alive every ~20s during quiet periods; using
@@ -836,7 +836,35 @@ class Orchestrator:
             )
             return
 
-        # 4. Submit entry — limit buy at live ask
+        # 4. Concurrent-positions cap — skip new entries if at limit.
+        # Existing positions keep being managed; this only blocks NEW entries.
+        # Counts only positions in the live in-memory map so a stale Alpaca
+        # position from an unrelated channel doesn't accidentally consume
+        # the bot's slot budget.
+        max_concurrent = self._cfg.max_concurrent_positions
+        current_open = len(self._open_positions)
+        if current_open >= max_concurrent:
+            logger.info(
+                "signal_id=%s skipped: at concurrent-positions cap (%d/%d)",
+                signal_id, current_open, max_concurrent,
+            )
+            journal.insert_event(
+                self._conn, ts=now, severity="info",
+                category="strategy",
+                message="max_concurrent_positions_reached",
+                context={
+                    "signal_id": signal_id,
+                    "current_open": current_open,
+                    "max_concurrent": max_concurrent,
+                },
+            )
+            journal.update_signal_rejection(
+                self._conn, signal_id=signal_id,
+                rejection_reason="max_concurrent_positions",
+            )
+            return
+
+        # 5. Submit entry — limit buy at live ask
         if validation.live_ask is None:
             logger.warning("validation accepted but live_ask is None; skipping")
             journal.update_signal_rejection(

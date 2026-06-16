@@ -1,7 +1,7 @@
-"""Phase 2 — X API v2 filtered stream listener for a single target account.
+"""Phase 2 — X API v2 filtered stream listener for one or more target accounts.
 
-Wraps tweepy.StreamingClient. On each tweet from the target author the
-provided `on_post` callback fires with (post_id, post_text, posted_at).
+Wraps tweepy.StreamingClient. On each tweet from any configured target author
+the provided `on_post` callback fires with (post_id, post_text, posted_at).
 
 Tweepy handles low-level reconnection; this module tracks `last_received_at`
 so the orchestrator can trip the connection kill switch if no posts arrive for
@@ -9,13 +9,19 @@ longer than the configured stall window.
 
 This module is pure plumbing — it does not parse, validate, or journal. The
 orchestrator wires on_post to the parser and journal in Phase 7.
+
+One stream, N rules: the X API v2 filtered stream supports up to 5 rules per
+bearer token on the standard tier; each `from:<id>` is a single rule. The
+stream delivers each tweet exactly once even if it matches multiple rules,
+and tweepy doesn't surface which rule matched — but the tweet's `author_id`
+identifies the source, which is what we journal.
 """
 
 from __future__ import annotations
 
 import logging
 import threading
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from datetime import datetime, timezone
 from typing import Any
 
@@ -27,8 +33,9 @@ logger = logging.getLogger(__name__)
 OnPost = Callable[[str, str, datetime], None]
 OnHeartbeat = Callable[[], None]  # for on_connect AND on_keep_alive
 
-# Matches "from:<numeric_id>" — the only rule we care about right now.
-_RULE_TAG = "target_account"
+# Rule tag prefix — final tag is "target_account:<account_id>" so we can
+# distinguish rules by tag if we ever need to.
+_RULE_TAG_PREFIX = "target_account"
 
 
 class XStreamListener(tweepy.StreamingClient):
@@ -37,13 +44,16 @@ class XStreamListener(tweepy.StreamingClient):
     def __init__(
         self,
         bearer_token: str,
-        target_account_id: str,
+        target_account_ids: Iterable[str],
         on_post: OnPost,
         on_connect: OnHeartbeat | None = None,
         on_keep_alive: OnHeartbeat | None = None,
     ) -> None:
         super().__init__(bearer_token=bearer_token, wait_on_rate_limit=True)
-        self._target_account_id = target_account_id
+        ids = tuple(str(a).strip() for a in target_account_ids if str(a).strip())
+        if not ids:
+            raise ValueError("target_account_ids must be non-empty")
+        self._target_account_ids: tuple[str, ...] = ids
         self._on_post = on_post
         self._on_connect_cb = on_connect
         self._on_keep_alive_cb = on_keep_alive
@@ -59,9 +69,11 @@ class XStreamListener(tweepy.StreamingClient):
             return self._last_received_at
 
     def configure_rules(self) -> None:
-        """Reset filter rules to exactly one rule: from:<target_account_id>.
+        """Reset filter rules to exactly one rule per target account.
 
         Idempotent — deletes any existing rules first so re-runs don't duplicate.
+        Each rule is tagged with the account id so tag-based introspection
+        works for callers that need to attribute tweets to a source rule.
         """
         existing = self.get_rules()
         # `existing.data` is None when no rules exist
@@ -70,12 +82,19 @@ class XStreamListener(tweepy.StreamingClient):
             self.delete_rules(existing_ids)
             logger.info("Deleted %d existing stream rules", len(existing_ids))
 
-        rule = tweepy.StreamRule(
-            value=f"from:{self._target_account_id}",
-            tag=_RULE_TAG,
+        rules = [
+            tweepy.StreamRule(
+                value=f"from:{account_id}",
+                tag=f"{_RULE_TAG_PREFIX}:{account_id}",
+            )
+            for account_id in self._target_account_ids
+        ]
+        self.add_rules(rules)
+        logger.info(
+            "Added %d stream rule(s): from:[%s]",
+            len(rules),
+            ",".join(self._target_account_ids),
         )
-        self.add_rules(rule)
-        logger.info("Added stream rule: from:%s", self._target_account_id)
 
     # ---- Tweepy overrides ----
 
@@ -131,16 +150,20 @@ class XStreamListener(tweepy.StreamingClient):
 
 def make_listener(
     bearer_token: str,
-    target_account_id: str,
+    target_account_ids: Iterable[str],
     on_post: OnPost,
     on_connect: OnHeartbeat | None = None,
     on_keep_alive: OnHeartbeat | None = None,
 ) -> XStreamListener:
-    """Factory: build a listener and configure its filter rule.
+    """Factory: build a listener and configure its filter rules.
 
     The returned listener must have `.filter(...)` called by the orchestrator
     to actually start streaming. Pulled apart so callers can choose to call
     `.filter(threaded=True)` for a background thread or `.filter()` to block.
+
+    `target_account_ids` is an iterable of numeric account IDs. One rule per
+    account; the standard tier supports up to 5 rules so listing two
+    accounts is well within limit.
 
     `on_connect` fires on the initial connect and every reconnect.
     `on_keep_alive` fires on X's ~20-second TCP keep-alives during quiet
@@ -149,7 +172,7 @@ def make_listener(
     tweet rate.
     """
     listener = XStreamListener(
-        bearer_token, target_account_id, on_post,
+        bearer_token, target_account_ids, on_post,
         on_connect=on_connect,
         on_keep_alive=on_keep_alive,
     )

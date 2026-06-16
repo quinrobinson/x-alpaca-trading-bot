@@ -94,3 +94,67 @@ def test_missing_required_var_raises(
     empty_env.write_text("")
     with pytest.raises(RuntimeError, match="ALPACA_API_KEY"):
         Config.load(empty_env)
+
+
+# ---- X target account loading ----
+
+def test_legacy_singular_x_target_loads(
+    monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    """X_TARGET_ACCOUNT_ID (legacy) still produces a one-element tuple so
+    existing single-account deploys keep working."""
+    _apply_env(monkeypatch, _MINIMAL_ENV)
+    monkeypatch.delenv("X_TARGET_ACCOUNT_IDS", raising=False)
+    empty_env = tmp_path / "empty.env"
+    empty_env.write_text("")
+    cfg = Config.load(empty_env)
+    assert cfg.x_target_account_ids == ("123",)
+
+
+def test_multi_account_csv_loads(
+    monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    """X_TARGET_ACCOUNT_IDS overrides the legacy singular when both are set."""
+    _apply_env(monkeypatch, _MINIMAL_ENV)
+    monkeypatch.setenv("X_TARGET_ACCOUNT_IDS", "111, 222 ,333")
+    empty_env = tmp_path / "empty.env"
+    empty_env.write_text("")
+    cfg = Config.load(empty_env)
+    assert cfg.x_target_account_ids == ("111", "222", "333")
+
+
+def test_missing_both_x_targets_raises(
+    monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    """At least one of X_TARGET_ACCOUNT_IDS or X_TARGET_ACCOUNT_ID must be set."""
+    _apply_env(monkeypatch, _MINIMAL_ENV)
+    monkeypatch.delenv("X_TARGET_ACCOUNT_ID", raising=False)
+    monkeypatch.delenv("X_TARGET_ACCOUNT_IDS", raising=False)
+    empty_env = tmp_path / "empty.env"
+    empty_env.write_text("")
+    with pytest.raises(RuntimeError, match="X target account"):
+        Config.load(empty_env)
+
+
+def test_max_concurrent_positions_default(
+    monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    """Defaults to 50 when MAX_CONCURRENT_POSITIONS is unset (effectively
+    no cap for single-account setups)."""
+    _apply_env(monkeypatch, _MINIMAL_ENV)
+    monkeypatch.delenv("MAX_CONCURRENT_POSITIONS", raising=False)
+    empty_env = tmp_path / "empty.env"
+    empty_env.write_text("")
+    cfg = Config.load(empty_env)
+    assert cfg.max_concurrent_positions == 50
+
+
+def test_max_concurrent_positions_override(
+    monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    _apply_env(monkeypatch, _MINIMAL_ENV)
+    monkeypatch.setenv("MAX_CONCURRENT_POSITIONS", "3")
+    empty_env = tmp_path / "empty.env"
+    empty_env.write_text("")
+    cfg = Config.load(empty_env)
+    assert cfg.max_concurrent_positions == 3

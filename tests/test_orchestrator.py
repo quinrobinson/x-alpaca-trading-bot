@@ -249,7 +249,7 @@ def conn() -> Iterator[psycopg.Connection]:
 def _config() -> Config:
     return Config(
         x_bearer_token="fake-x",
-        x_target_account_id="123",
+        x_target_account_ids=("123",),
         anthropic_api_key="fake-anthropic",
         alpaca_api_key="fake-alpaca",
         alpaca_secret_key="fake-alpaca-secret",

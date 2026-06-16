@@ -17,7 +17,9 @@ PAPER_BASE_URL = "https://paper-api.alpaca.markets"
 
 REQUIRED_VARS: tuple[str, ...] = (
     "X_BEARER_TOKEN",
-    "X_TARGET_ACCOUNT_ID",
+    # X target account IDs validated separately — see load() below — so the
+    # singular X_TARGET_ACCOUNT_ID stays as a backwards-compat fallback for
+    # the multi-account X_TARGET_ACCOUNT_IDS list.
     "ANTHROPIC_API_KEY",
     "ALPACA_API_KEY",
     "ALPACA_SECRET_KEY",
@@ -44,7 +46,7 @@ def assert_paper_mode(base_url: str) -> None:
 class Config:
     # Required credentials
     x_bearer_token: str
-    x_target_account_id: str
+    x_target_account_ids: tuple[str, ...]
     anthropic_api_key: str
     alpaca_api_key: str
     alpaca_secret_key: str
@@ -70,6 +72,13 @@ class Config:
     # operator-toggled to a hard default.
     max_entry_iv: Decimal | None = None
 
+    # Cap on simultaneously open positions. New entries that would push the
+    # bot above this number are skipped at the orchestrator level (the
+    # existing X-stream + scanner pipelines share this budget). Defaults to
+    # a generous ceiling so single-account setups behave as before — tighten
+    # when adding a second signal source so they don't dogpile capital.
+    max_concurrent_positions: int = 50
+
     # Operator switches
     disable_x_stream: bool = False        # skip X stream connect + suppress x_stream kill switch
 
@@ -94,9 +103,25 @@ class Config:
                 f"See .env.example."
             )
 
+        # X target accounts — prefer multi-account list; fall back to the
+        # singular var for backwards compatibility. One of the two must be
+        # set or the bot has nothing to listen to.
+        ids_raw = os.environ.get("X_TARGET_ACCOUNT_IDS", "").strip()
+        if ids_raw:
+            x_target_account_ids = tuple(
+                aid.strip() for aid in ids_raw.split(",") if aid.strip()
+            )
+        elif os.environ.get("X_TARGET_ACCOUNT_ID", "").strip():
+            x_target_account_ids = (os.environ["X_TARGET_ACCOUNT_ID"].strip(),)
+        else:
+            raise RuntimeError(
+                "Missing X target account configuration: set "
+                "X_TARGET_ACCOUNT_IDS (comma-separated) or X_TARGET_ACCOUNT_ID."
+            )
+
         return cls(
             x_bearer_token=os.environ["X_BEARER_TOKEN"],
-            x_target_account_id=os.environ["X_TARGET_ACCOUNT_ID"],
+            x_target_account_ids=x_target_account_ids,
             anthropic_api_key=os.environ["ANTHROPIC_API_KEY"],
             alpaca_api_key=os.environ["ALPACA_API_KEY"],
             alpaca_secret_key=os.environ["ALPACA_SECRET_KEY"],
@@ -117,6 +142,9 @@ class Config:
                 Decimal(os.environ["MAX_ENTRY_IV"])
                 if os.environ.get("MAX_ENTRY_IV", "").strip()
                 else None
+            ),
+            max_concurrent_positions=int(
+                os.environ.get("MAX_CONCURRENT_POSITIONS", "50")
             ),
             disable_x_stream=os.environ.get("DISABLE_X_STREAM", "").lower() in ("1", "true", "yes"),
         )
