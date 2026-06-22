@@ -190,3 +190,35 @@ CREATE TABLE IF NOT EXISTS signal_price_tracks (
     UNIQUE (signal_id, offset_minutes)
 );
 CREATE INDEX IF NOT EXISTS idx_price_tracks_signal ON signal_price_tracks (signal_id);
+
+-- ============================================================
+-- Scanner events — independent signal-source candidate detections
+-- ============================================================
+-- The scanner subsystem (Phase A: scan-only) writes one row per
+-- detected setup. Today only 'failed_breakout' is wired but
+-- scanner_name is a free-form text column so future scanners can
+-- share this table without schema migrations.
+--
+-- UNIQUE (scanner_name, ticker, event_day) guarantees idempotency:
+-- multiple scan passes on the same day can't double-record the same
+-- detected event for one ticker. The scanner relies on this to
+-- decide whether to log a new event or skip it.
+--
+-- This table is intentionally not joined to signals/orders/trades.
+-- Phase A logs and observes only — no orchestrator integration.
+CREATE TABLE IF NOT EXISTS scanner_events (
+    id              BIGSERIAL PRIMARY KEY,
+    scanner_name    TEXT NOT NULL,
+    ticker          TEXT NOT NULL,
+    detected_at     TIMESTAMPTZ NOT NULL,
+    event_day       DATE NOT NULL,
+    breakout_ts     TIMESTAMPTZ NOT NULL,
+    breakout_price  NUMERIC(12, 4) NOT NULL,
+    failure_ts      TIMESTAMPTZ NOT NULL,
+    failure_price   NUMERIC(12, 4) NOT NULL,
+    prior_high      NUMERIC(12, 4) NOT NULL,
+    volume_ratio    NUMERIC(8, 4),               -- failure-bar vol / sample-mean vol
+    UNIQUE (scanner_name, ticker, event_day)
+);
+CREATE INDEX IF NOT EXISTS idx_scanner_events_detected ON scanner_events (detected_at DESC);
+CREATE INDEX IF NOT EXISTS idx_scanner_events_ticker_day ON scanner_events (ticker, event_day);

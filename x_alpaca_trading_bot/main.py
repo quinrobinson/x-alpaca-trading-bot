@@ -301,6 +301,23 @@ class Orchestrator:
         self._stream_listener: Any = None
         self._lock = threading.Lock()
 
+        # Failed-breakout scanner — Phase A is log-only. Built lazily here
+        # so test fixtures that don't enable it pay nothing. The thread is
+        # started in run() and torn down via shutdown_event in the loop.
+        self._scanner_thread: threading.Thread | None = None
+        self._scanner: Any | None = None
+        if self._cfg.scanner_enabled:
+            from x_alpaca_trading_bot.scanners.failed_breakout import (
+                DEFAULT_UNIVERSE,
+                DataServiceBarSource,
+                FailedBreakoutScanner,
+            )
+            self._scanner = FailedBreakoutScanner(
+                universe=self._cfg.scanner_universe or DEFAULT_UNIVERSE,
+                bar_source=DataServiceBarSource(self._ds),
+                record_event=self._record_scanner_event,
+            )
+
     # ---- Runtime config snapshot --------------------------------------
 
     def _runtime_config(self) -> BotConfig:
@@ -331,6 +348,7 @@ class Orchestrator:
         try:
             self._reconcile_on_startup()
             self._start_stream()
+            self._start_scanner_thread()
             logger.info("orchestrator running; tick=%ss", self._tick_seconds)
             while not self._shutdown_event.is_set():
                 self.tick(datetime.now(timezone.utc))
@@ -344,6 +362,7 @@ class Orchestrator:
             return 1
         finally:
             self._stop_stream()
+            self._join_scanner_thread()
             logger.info("orchestrator stopped")
         return 0
 
@@ -351,7 +370,8 @@ class Orchestrator:
         logger.info("shutdown requested")
         self._shutdown_event.set()
         # Wake the run loop so it doesn't sit out the rest of the tick
-        # interval before noticing shutdown.
+        # interval before noticing shutdown. The scanner thread waits on
+        # the same shutdown_event so it tears down on the same signal.
         self._wake_event.set()
 
     # ---- The tick (testable) ------------------------------------------
@@ -707,6 +727,74 @@ class Orchestrator:
             listener.disconnect()
         except Exception:  # noqa: BLE001
             logger.exception("failed to disconnect stream cleanly")
+
+    # ---- Scanner (Phase A) --------------------------------------------
+
+    def _start_scanner_thread(self) -> None:
+        """Spawn the background scanner thread. No-op when scanner disabled."""
+        if self._scanner is None:
+            return
+        interval = max(self._cfg.scanner_interval_seconds, 30)
+        self._scanner_thread = threading.Thread(
+            target=self._scanner_loop,
+            args=(interval,),
+            name="scanner-failed-breakout",
+            daemon=True,
+        )
+        self._scanner_thread.start()
+        logger.info(
+            "scanner thread started; interval=%ss universe=%d tickers",
+            interval, len(self._scanner._universe),
+        )
+
+    def _join_scanner_thread(self) -> None:
+        thread = self._scanner_thread
+        if thread is None or not thread.is_alive():
+            return
+        thread.join(timeout=5.0)
+
+    def _scanner_loop(self, interval_seconds: int) -> None:
+        """Run scan() periodically until shutdown. Skips scans when the
+        cached market_open flag is False — that avoids burning Alpaca
+        bar-fetch credits outside RTH."""
+        while not self._shutdown_event.is_set():
+            try:
+                if self._state.market_open and self._scanner is not None:
+                    self._scanner.scan(datetime.now(timezone.utc))
+            except Exception:  # noqa: BLE001
+                logger.exception("scanner iteration failed; continuing")
+            self._shutdown_event.wait(timeout=interval_seconds)
+
+    def _record_scanner_event(
+        self,
+        scanner_name: str,
+        event: Any,  # scanners.failed_breakout.FailedBreakout — Any to avoid heavy import here
+        now: datetime,
+    ) -> bool:
+        """Bridge the scanner module to the journal. Reads self._conn at
+        call time so we pick up any reconnect performed by the tick loop's
+        ensure_connection call."""
+        from decimal import Decimal as _D
+        try:
+            return journal.insert_scanner_event(
+                self._conn,
+                scanner_name=scanner_name,
+                ticker=event.ticker,
+                detected_at=now,
+                event_day=event.day,
+                breakout_ts=event.breakout_ts,
+                breakout_price=_D(str(event.breakout_price)),
+                failure_ts=event.failure_ts,
+                failure_price=_D(str(event.failure_price)),
+                prior_high=_D(str(event.prior_high)),
+                volume_ratio=(
+                    _D(str(event.volume_ratio))
+                    if event.volume_ratio is not None else None
+                ),
+            )
+        except Exception:  # noqa: BLE001
+            logger.exception("insert_scanner_event failed for %s", event.ticker)
+            return False
 
     def _on_x_post(self, post_id: str, post_text: str, posted_at: datetime) -> None:
         """Stream callback (runs in stream thread). Push onto queue + bump heartbeat."""

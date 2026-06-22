@@ -399,3 +399,46 @@ def _jsonable(value: Any) -> Any:
     if isinstance(value, (list, tuple)):
         return [_jsonable(v) for v in value]
     return value
+
+
+def insert_scanner_event(
+    conn: psycopg.Connection,
+    *,
+    scanner_name: str,
+    ticker: str,
+    detected_at: datetime,
+    event_day: "Any",  # date — keeping the Any annotation in line with other helpers
+    breakout_ts: datetime,
+    breakout_price: Decimal,
+    failure_ts: datetime,
+    failure_price: Decimal,
+    prior_high: Decimal,
+    volume_ratio: Decimal | None,
+) -> bool:
+    """Insert one scanner detection into scanner_events.
+
+    Returns True on actual insert, False when the row was already there
+    (UNIQUE conflict on scanner_name + ticker + event_day). The scanner
+    uses the return value to skip re-emitting events it has already
+    recorded earlier the same day.
+    """
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            INSERT INTO scanner_events
+                (scanner_name, ticker, detected_at, event_day,
+                 breakout_ts, breakout_price, failure_ts, failure_price,
+                 prior_high, volume_ratio)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            ON CONFLICT (scanner_name, ticker, event_day) DO NOTHING
+            RETURNING id
+            """,
+            (
+                scanner_name, ticker, detected_at, event_day,
+                breakout_ts, breakout_price, failure_ts, failure_price,
+                prior_high, volume_ratio,
+            ),
+        )
+        row = cur.fetchone()
+    conn.commit()
+    return row is not None

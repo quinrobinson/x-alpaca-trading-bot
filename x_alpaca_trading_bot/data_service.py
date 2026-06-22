@@ -433,6 +433,43 @@ class DataService:
             logger.warning("alpaca bars %s failed: %s", ticker, exc)
             return pd.DataFrame()
 
+    def get_recent_daily_bars(
+        self,
+        ticker: str,
+        now: datetime,
+        *,
+        limit: int = 5,
+    ) -> list[OHLCBar]:
+        """Recent daily OHLC bars for one underlying — feeds the scanner's
+        prior-day-high computation.
+
+        Lookback is widened to cover weekends and holidays so we always
+        get the requested count of trading days. Returns oldest-first.
+        """
+        # 7-day cushion per requested bar covers any weekend or 1-2 holiday
+        # span without going overboard on API calls.
+        lookback_days = max(limit * 7, 14)
+        df = self._fetch_alpaca_bars(
+            ticker, now,
+            timeframe_minutes=None,
+            lookback_days=lookback_days,
+        )
+        if df is None or df.empty:
+            return []
+        tail = df.tail(limit)
+        out: list[OHLCBar] = []
+        for ts, row in tail.iterrows():
+            py_ts = ts.to_pydatetime() if hasattr(ts, "to_pydatetime") else ts
+            out.append(OHLCBar(
+                ts=py_ts,
+                open=Decimal(str(row["open"])),
+                high=Decimal(str(row["high"])),
+                low=Decimal(str(row["low"])),
+                close=Decimal(str(row["close"])),
+                volume=int(row.get("volume", 0)),
+            ))
+        return out
+
     def get_underlying_bars(
         self,
         ticker: str,

@@ -79,6 +79,18 @@ class Config:
     # when adding a second signal source so they don't dogpile capital.
     max_concurrent_positions: int = 50
 
+    # Scanner (independent signal source). Default OFF so behavior is
+    # unchanged until the operator opts in. When enabled, the orchestrator
+    # spawns a background thread that runs the failed-breakout scanner
+    # every scanner_interval_seconds during RTH. Phase A is log-only —
+    # detected events land in scanner_events but do NOT enter the trade
+    # queue.
+    scanner_enabled: bool = False
+    scanner_interval_seconds: int = 300
+    # None means "use scanners.failed_breakout.DEFAULT_UNIVERSE". A comma-
+    # separated string overrides — same shape as X_TARGET_ACCOUNT_IDS.
+    scanner_universe: tuple[str, ...] | None = None
+
     # Operator switches
     disable_x_stream: bool = False        # skip X stream connect + suppress x_stream kill switch
 
@@ -145,6 +157,20 @@ class Config:
             ),
             max_concurrent_positions=int(
                 os.environ.get("MAX_CONCURRENT_POSITIONS", "50")
+            ),
+            scanner_enabled=(
+                os.environ.get("SCANNER_ENABLED", "").lower() in ("1", "true", "yes")
+            ),
+            scanner_interval_seconds=int(
+                os.environ.get("SCANNER_INTERVAL_SECONDS", "300")
+            ),
+            scanner_universe=(
+                tuple(
+                    t.strip() for t in os.environ["SCANNER_UNIVERSE"].split(",")
+                    if t.strip()
+                )
+                if os.environ.get("SCANNER_UNIVERSE", "").strip()
+                else None
             ),
             disable_x_stream=os.environ.get("DISABLE_X_STREAM", "").lower() in ("1", "true", "yes"),
         )
