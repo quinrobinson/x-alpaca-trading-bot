@@ -368,6 +368,17 @@ class Orchestrator:
         if now.tzinfo is None:
             raise ValueError("now must be timezone-aware")
 
+        # 0. Make sure the DB connection is live before any tick stage uses
+        #    it. Supabase prunes idle connections and pauses free-tier
+        #    projects, leaving the cached connection in a "closed" state
+        #    that every cursor() call then raises on. The orchestrator
+        #    used to crash-loop in that state until a manual restart;
+        #    ensure_connection transparently reopens so the loop survives.
+        try:
+            self._conn = db.ensure_connection(self._conn, self._cfg.database_url)
+        except Exception:  # noqa: BLE001
+            logger.exception("ensure_connection failed; tick will skip DB stages")
+
         # 1. Drain any X stream events that arrived since last tick.
         try:
             self._drain_post_queue(now)
