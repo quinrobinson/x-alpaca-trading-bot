@@ -48,6 +48,7 @@ from api.routers import debug as debug_router
 from api.routers import market as market_router
 from api.routers import performance as performance_router
 from api.routers import positions as positions_router
+from api.routers import scanner as scanner_router
 from api.routers import signals as signals_router
 from api.routers import timeline as timeline_router
 from api.ws_manager import WSManager
@@ -197,6 +198,7 @@ def create_app(
     app.include_router(market_router.router, prefix="/api")
     app.include_router(config_router.router, prefix="/api")
     app.include_router(debug_router.router, prefix="/api")
+    app.include_router(scanner_router.router, prefix="/api")
 
     @app.websocket("/api/ws")
     async def ws_endpoint(websocket: WebSocket) -> None:

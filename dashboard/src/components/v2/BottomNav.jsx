@@ -27,6 +27,7 @@ export default function BottomNav() {
       <div className="max-w-3xl lg:max-w-6xl mx-auto px-2 flex">
         <Tab to="/" label="Dashboard" icon={<DashboardIcon />} end />
         <Tab to="/timeline" label="Timeline" icon={<TimelineIcon />} />
+        <Tab to="/scanner" label="Scanner" icon={<ScannerIcon />} />
         <Tab to="/performance" label="Performance" icon={<ChartIcon />} />
         <Tab to="/settings" label="Settings" icon={<GearIcon />} />
       </div>
@@ -94,6 +95,19 @@ function ChartIcon() {
       strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round">
       <polyline points="3 17 8 12 12 16 21 6" />
       <polyline points="15 6 21 6 21 12" />
+    </svg>
+  )
+}
+
+function ScannerIcon() {
+  // Radar-sweep glyph — circular tracker
+  return (
+    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+      strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round">
+      <circle cx="12" cy="12" r="9" />
+      <circle cx="12" cy="12" r="5" />
+      <line x1="12" y1="12" x2="20" y2="6" />
+      <circle cx="12" cy="12" r="1.5" />
     </svg>
   )
 }
