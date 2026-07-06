@@ -67,6 +67,7 @@ def create_app(
     static_dir: Path | None = None,
     config_store: BotConfigStore | None = None,
     data_service: Any | None = None,
+    database_url: str | None = None,
 ) -> FastAPI:
     """Build a FastAPI app wired with the given orchestrator + DB conn.
 
@@ -144,6 +145,12 @@ def create_app(
     app.state.conn = conn
     app.state.config_store = config_store
     app.state.data_service = data_service
+    # When database_url is provided, the read endpoints self-heal a pruned
+    # connection via resolve_conn (serialized by conn_lock). Left unset in
+    # tests, which inject a fake conn and use it as-is.
+    app.state.database_url = database_url
+    if database_url is not None:
+        app.state.conn_lock = threading.Lock()
 
     @app.get("/api/healthz", tags=["meta"])
     def healthz() -> JSONResponse:
@@ -327,6 +334,15 @@ def build_production_app() -> FastAPI:
     conn = db.connect(cfg.database_url)
     db.run_migrations(conn, deploy_dir)
 
+    # The API gets its OWN connection, separate from the orchestrator's.
+    # The orchestrator swaps self._conn on reconnect (ensure_connection);
+    # sharing one object meant that swap orphaned the API on a dead handle
+    # and every read endpoint froze. A dedicated autocommit connection —
+    # re-validated per request by resolve_conn — keeps the dashboard's
+    # read views alive independently of the orchestrator's connection.
+    api_conn = db.connect(cfg.database_url)
+    api_conn.autocommit = True
+
     # Seed runtime config from the bot_config table (created by the
     # migration above). The store is shared between the API routers and
     # the orchestrator thread so a PATCH from the dashboard takes effect
@@ -365,12 +381,13 @@ def build_production_app() -> FastAPI:
     )
 
     app = create_app(
-        conn=conn,
+        conn=api_conn,
         orchestrator=orchestrator,
         run_orchestrator=True,
         static_dir=project_root / "dashboard" / "dist",
         config_store=config_store,
         data_service=ds,
+        database_url=cfg.database_url,
     )
 
     # Translate SIGINT / SIGTERM into orchestrator shutdown.
