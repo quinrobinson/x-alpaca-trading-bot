@@ -18,6 +18,8 @@ from typing import Any
 
 from fastapi import APIRouter, Query, Request
 
+from api.db_dep import resolve_conn
+
 router = APIRouter(prefix="/scanner", tags=["scanner"])
 
 
@@ -46,8 +48,7 @@ def scanner_status(request: Request) -> dict[str, Any]:
             from x_alpaca_trading_bot.scanners.failed_breakout import DEFAULT_UNIVERSE
             universe = list(DEFAULT_UNIVERSE)
 
-    conn = request.app.state.conn
-    with conn.cursor() as cur:
+    with resolve_conn(request) as conn, conn.cursor() as cur:
         cur.execute(
             """
             SELECT MAX(detected_at) AS last_event,
@@ -106,8 +107,7 @@ def list_events(
         ORDER BY detected_at DESC
         LIMIT %s
     """
-    conn = request.app.state.conn
-    with conn.cursor() as cur:
+    with resolve_conn(request) as conn, conn.cursor() as cur:
         cur.execute(sql, params)
         rows = cur.fetchall()
 
@@ -142,8 +142,7 @@ def daily_counts(
     """Bucket events by event_day for the mini chart. Includes zero-rows
     for days inside the window with no detections — the dashboard renders
     those as empty bars instead of gaps."""
-    conn = request.app.state.conn
-    with conn.cursor() as cur:
+    with resolve_conn(request) as conn, conn.cursor() as cur:
         cur.execute(
             """
             WITH days AS (

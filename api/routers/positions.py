@@ -11,6 +11,8 @@ from typing import Any
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
 
+from api.db_dep import resolve_conn
+
 router = APIRouter(prefix="/positions", tags=["positions"])
 
 
@@ -31,59 +33,59 @@ def list_open_positions(request: Request) -> list[dict[str, Any]]:
     if not records:
         return []
 
-    conn = request.app.state.conn
     signal_ids = [r.signal_id for r in records]
     posts_by_signal_id: dict[int, dict[str, Any]] = {}
     snapshot_by_signal_id: dict[int, dict[str, Any]] = {}
 
-    if conn is not None:
+    with resolve_conn(request) as conn:
         # Originating tweets.
-        with conn.cursor() as cur:
-            cur.execute(
-                """
-                SELECT s.id, x.post_text, x.posted_at
-                FROM signals s
-                JOIN x_posts x ON x.id = s.x_post_id
-                WHERE s.id = ANY(%s)
-                """,
-                (signal_ids,),
-            )
-            for sid, text, posted_at in cur.fetchall():
-                posts_by_signal_id[sid] = {
-                    "post_text": text,
-                    "posted_at": posted_at.isoformat() if posted_at else None,
-                }
+        if conn is not None:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT s.id, x.post_text, x.posted_at
+                    FROM signals s
+                    JOIN x_posts x ON x.id = s.x_post_id
+                    WHERE s.id = ANY(%s)
+                    """,
+                    (signal_ids,),
+                )
+                for sid, text, posted_at in cur.fetchall():
+                    posts_by_signal_id[sid] = {
+                        "post_text": text,
+                        "posted_at": posted_at.isoformat() if posted_at else None,
+                    }
 
-        # Latest indicator snapshot per open position — feeds the
-        # dashboard's Greeks & indicators panel. DISTINCT ON keeps only
-        # the most recent ts for each signal_id.
-        with conn.cursor() as cur:
-            cur.execute(
-                """
-                SELECT DISTINCT ON (signal_id)
-                    signal_id, ts, snapshot_type,
-                    delta, gamma, theta, vega, iv,
-                    rsi_14, vwap, atr_14, option_mid
-                FROM indicator_snapshots
-                WHERE signal_id = ANY(%s)
-                ORDER BY signal_id, ts DESC
-                """,
-                (signal_ids,),
-            )
-            cols = [
-                "signal_id", "ts", "snapshot_type",
-                "delta", "gamma", "theta", "vega", "iv",
-                "rsi_14", "vwap", "atr_14", "option_mid",
-            ]
-            for row in cur.fetchall():
-                d = dict(zip(cols, row))
-                sid = d.pop("signal_id")
-                # Stringify numerics + the timestamp for clean JSON.
-                snapshot_by_signal_id[sid] = {
-                    k: (v.isoformat() if k == "ts" and v is not None
-                        else str(v) if v is not None else None)
-                    for k, v in d.items()
-                }
+            # Latest indicator snapshot per open position — feeds the
+            # dashboard's Greeks & indicators panel. DISTINCT ON keeps only
+            # the most recent ts for each signal_id.
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT DISTINCT ON (signal_id)
+                        signal_id, ts, snapshot_type,
+                        delta, gamma, theta, vega, iv,
+                        rsi_14, vwap, atr_14, option_mid
+                    FROM indicator_snapshots
+                    WHERE signal_id = ANY(%s)
+                    ORDER BY signal_id, ts DESC
+                    """,
+                    (signal_ids,),
+                )
+                cols = [
+                    "signal_id", "ts", "snapshot_type",
+                    "delta", "gamma", "theta", "vega", "iv",
+                    "rsi_14", "vwap", "atr_14", "option_mid",
+                ]
+                for row in cur.fetchall():
+                    d = dict(zip(cols, row))
+                    sid = d.pop("signal_id")
+                    # Stringify numerics + the timestamp for clean JSON.
+                    snapshot_by_signal_id[sid] = {
+                        k: (v.isoformat() if k == "ts" and v is not None
+                            else str(v) if v is not None else None)
+                        for k, v in d.items()
+                    }
 
     out: list[dict[str, Any]] = []
     for record in records:

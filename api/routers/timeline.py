@@ -20,6 +20,8 @@ from typing import Any
 
 from fastapi import APIRouter, Query, Request
 
+from api.db_dep import resolve_conn
+
 router = APIRouter(prefix="/timeline", tags=["timeline"])
 
 
@@ -29,8 +31,7 @@ def get_timeline(
     limit: int = Query(default=50, ge=1, le=500),
     include_rejected: bool = Query(default=True),
 ) -> list[dict[str, Any]]:
-    conn = request.app.state.conn
-    with conn.cursor() as cur:
+    with resolve_conn(request) as conn, conn.cursor() as cur:
         cur.execute(
             """
             SELECT

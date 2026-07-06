@@ -6,6 +6,8 @@ from typing import Any
 
 from fastapi import APIRouter, Query, Request
 
+from api.db_dep import resolve_conn
+
 router = APIRouter(prefix="/signals", tags=["signals"])
 
 
@@ -15,8 +17,7 @@ def list_signals(
     limit: int = Query(default=50, ge=1, le=500),
 ) -> list[dict[str, Any]]:
     """Return up to `limit` signals, most recent first."""
-    conn = request.app.state.conn
-    with conn.cursor() as cur:
+    with resolve_conn(request) as conn, conn.cursor() as cur:
         cur.execute(
             """
             SELECT id, x_post_id, parsed_at, ticker, option_type, strike,

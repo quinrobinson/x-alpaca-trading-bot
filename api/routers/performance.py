@@ -7,6 +7,8 @@ from typing import Any
 
 from fastapi import APIRouter, Query, Request
 
+from api.db_dep import resolve_conn
+
 router = APIRouter(prefix="/performance", tags=["performance"])
 
 
@@ -16,8 +18,7 @@ def get_performance(
     limit: int = Query(default=200, ge=1, le=2000),
 ) -> dict[str, Any]:
     """Return: { stats: {...}, trades: [...] } from the trades table."""
-    conn = request.app.state.conn
-    with conn.cursor() as cur:
+    with resolve_conn(request) as conn, conn.cursor() as cur:
         cur.execute(
             """
             SELECT id, signal_id, opened_at, closed_at, ticker, option_type,
