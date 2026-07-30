@@ -316,6 +316,7 @@ class Orchestrator:
                 universe=self._cfg.scanner_universe or DEFAULT_UNIVERSE,
                 bar_source=DataServiceBarSource(self._ds),
                 record_event=self._record_scanner_event,
+                breakout_cutoff=self._cfg.scanner_breakout_cutoff,
             )
 
     # ---- Runtime config snapshot --------------------------------------

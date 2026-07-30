@@ -158,3 +158,42 @@ def test_max_concurrent_positions_override(
     empty_env.write_text("")
     cfg = Config.load(empty_env)
     assert cfg.max_concurrent_positions == 3
+
+
+# ---- Scanner breakout cutoff ----
+
+def test_scanner_breakout_cutoff_default_none(
+    monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    """Unset means None — the scanner module's own default applies."""
+    _apply_env(monkeypatch, _MINIMAL_ENV)
+    monkeypatch.delenv("SCANNER_BREAKOUT_CUTOFF", raising=False)
+    empty_env = tmp_path / "empty.env"
+    empty_env.write_text("")
+    cfg = Config.load(empty_env)
+    assert cfg.scanner_breakout_cutoff is None
+
+
+def test_scanner_breakout_cutoff_parsed(
+    monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    from datetime import time
+
+    _apply_env(monkeypatch, _MINIMAL_ENV)
+    monkeypatch.setenv("SCANNER_BREAKOUT_CUTOFF", "12:00")
+    empty_env = tmp_path / "empty.env"
+    empty_env.write_text("")
+    cfg = Config.load(empty_env)
+    assert cfg.scanner_breakout_cutoff == time(12, 0)
+
+
+def test_scanner_breakout_cutoff_malformed_raises(
+    monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    """A typo'd cutoff must fail startup loudly, not silently revert."""
+    _apply_env(monkeypatch, _MINIMAL_ENV)
+    monkeypatch.setenv("SCANNER_BREAKOUT_CUTOFF", "noonish")
+    empty_env = tmp_path / "empty.env"
+    empty_env.write_text("")
+    with pytest.raises(RuntimeError, match="SCANNER_BREAKOUT_CUTOFF"):
+        Config.load(empty_env)
