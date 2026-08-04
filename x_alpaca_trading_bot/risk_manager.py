@@ -237,6 +237,27 @@ def realized_pnl_today(conn: psycopg.Connection, session_date: date) -> Decimal:
     return Decimal(row[0])
 
 
+def scanner_realized_pnl_today(
+    conn: psycopg.Connection, session_date: date
+) -> Decimal:
+    """Sum gross_pnl over scanner equity trades closed on `session_date`.
+
+    The scanner book (SCANNER_PROGRAM.md Phase S2) shares the daily-loss
+    kill switch with the legacy trades table — the orchestrator sums the
+    two when building SessionState."""
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT COALESCE(SUM(gross_pnl), 0) "
+            "FROM scanner_trades "
+            "WHERE closed_at::date = %s",
+            (session_date,),
+        )
+        row = cur.fetchone()
+    if row is None or row[0] is None:
+        return Decimal(0)
+    return Decimal(row[0])
+
+
 def consecutive_loss_count(
     conn: psycopg.Connection,
     *,

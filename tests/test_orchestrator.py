@@ -275,6 +275,7 @@ def _orch(
     seed_heartbeats: bool = True,
     config_store: Any | None = None,
     notifier: Any | None = None,
+    config: Config | None = None,
 ) -> tuple[Orchestrator, FakeAlpacaClient, list[tuple[str, dict]]]:
     fake_alpaca = alpaca or FakeAlpacaClient()
     ex = Executor(trading_client=fake_alpaca)
@@ -285,7 +286,7 @@ def _orch(
         broadcasts.append((event, payload))
 
     orch = Orchestrator(
-        config=_config(),
+        config=config or _config(),
         conn=conn,
         data_service=ds or HappyQuoteProvider(),
         executor=ex,
@@ -1194,3 +1195,182 @@ def test_advance_position_skips_when_closing_in_progress(
     # No order activity from advance_position.
     assert alpaca.cancellations == cancellations_before
     assert alpaca.submitted == submitted_before
+
+
+# ---- Scanner equity book (SCANNER_PROGRAM.md Phase S2) --------------------
+
+def _armed_config() -> Config:
+    from dataclasses import replace as dc_replace
+    return dc_replace(_config(), scanner_trading_enabled=True)
+
+
+def _scanner_signal(
+    *,
+    failure_ts: datetime,
+    detected_at: datetime,
+    ticker: str = "RIVN",
+    scanner_name: str = "failed_breakout",
+    volume_ratio: Decimal | None = Decimal("1.5"),
+):
+    from x_alpaca_trading_bot.main import _ScannerSignal
+    return _ScannerSignal(
+        scanner_name=scanner_name,
+        ticker=ticker,
+        event_day=failure_ts.astimezone(ET).date(),
+        failure_ts=failure_ts,
+        volume_ratio=volume_ratio,
+        detected_at=detected_at,
+    )
+
+
+def _clean_scanner_trades(conn: psycopg.Connection) -> None:
+    with conn.cursor() as cur:
+        cur.execute("DELETE FROM scanner_trades")
+    conn.commit()
+
+
+# 10:00 ET failure, decision 5 minutes later — inside every entry gate.
+S2_FAILURE_TS = datetime(2026, 5, 13, 14, 0, tzinfo=timezone.utc)
+S2_NOW = datetime(2026, 5, 13, 14, 5, tzinfo=timezone.utc)
+
+
+def test_scanner_signal_disarmed_takes_no_trade(conn: psycopg.Connection) -> None:
+    """Default config ships disarmed — signals drain without any orders."""
+    _clean_scanner_trades(conn)
+    orch, alpaca, _ = _orch(conn=conn)
+    orch._scanner_signal_queue.put(
+        _scanner_signal(failure_ts=S2_FAILURE_TS, detected_at=S2_NOW)
+    )
+    orch.tick(S2_NOW)
+    assert alpaca.submitted == []
+    assert orch._equity_positions == {}
+    assert orch._scanner_signal_queue.empty()
+
+
+def test_scanner_signal_armed_opens_short_with_stop(conn: psycopg.Connection) -> None:
+    _clean_scanner_trades(conn)
+    orch, alpaca, broadcasts = _orch(conn=conn, config=_armed_config())
+    alpaca.next_fill = Decimal("185.10")  # entry market sell pre-fills
+
+    orch._scanner_signal_queue.put(
+        _scanner_signal(failure_ts=S2_FAILURE_TS, detected_at=S2_NOW)
+    )
+    orch.tick(S2_NOW)
+
+    # Market sell (short) + protective buy-stop on the book.
+    sides = [(o.side, o.type) for o in alpaca.submitted]
+    assert ("sell", "market") in sides
+    assert ("buy", "stop") in sides
+
+    assert "RIVN" in orch._equity_positions
+    record = orch._equity_positions["RIVN"]
+    assert record.qty == 5                       # floor(1000 / 185.10)
+    assert record.entry_price == Decimal("185.10")
+    assert record.position.stop_price == Decimal("186.95")  # +1%
+
+    rows = journal.open_scanner_trades(conn)
+    assert len(rows) == 1
+    assert rows[0]["ticker"] == "RIVN"
+    assert any(e == "scanner.trade_entered" for e, _ in broadcasts)
+
+
+def test_scanner_unvalidated_hypothesis_never_trades(conn: psycopg.Connection) -> None:
+    """Lab hypotheses under observation (vwap_reject etc.) must not open
+    positions even when armed."""
+    _clean_scanner_trades(conn)
+    orch, alpaca, _ = _orch(conn=conn, config=_armed_config())
+    orch._scanner_signal_queue.put(_scanner_signal(
+        failure_ts=S2_FAILURE_TS, detected_at=S2_NOW,
+        scanner_name="vwap_reject",
+    ))
+    orch.tick(S2_NOW)
+    assert alpaca.submitted == []
+    assert orch._equity_positions == {}
+
+
+def test_scanner_time_exit_covers_and_books(conn: psycopg.Connection) -> None:
+    _clean_scanner_trades(conn)
+    orch, alpaca, broadcasts = _orch(conn=conn, config=_armed_config())
+    alpaca.next_fill = Decimal("185.10")
+    orch._scanner_signal_queue.put(
+        _scanner_signal(failure_ts=S2_FAILURE_TS, detected_at=S2_NOW)
+    )
+    orch.tick(S2_NOW)
+    assert "RIVN" in orch._equity_positions
+
+    # 61 minutes after entry: cover fills at a lower price → profit.
+    alpaca.next_fill = Decimal("184.00")
+    orch.tick(S2_NOW + timedelta(minutes=61))
+
+    assert orch._equity_positions == {}
+    assert journal.open_scanner_trades(conn) == []
+    with conn.cursor() as cur:
+        cur.execute("SELECT exit_reason, gross_pnl FROM scanner_trades")
+        reason, pnl = cur.fetchone()
+    assert reason == "time_exit"
+    assert Decimal(pnl) == Decimal("5.50")       # (185.10 - 184.00) * 5
+    assert any(e == "scanner.trade_exited" for e, _ in broadcasts)
+
+
+def test_scanner_stop_fill_books_stop_hit(conn: psycopg.Connection) -> None:
+    _clean_scanner_trades(conn)
+    orch, alpaca, _ = _orch(conn=conn, config=_armed_config())
+    alpaca.next_fill = Decimal("185.10")
+    orch._scanner_signal_queue.put(
+        _scanner_signal(failure_ts=S2_FAILURE_TS, detected_at=S2_NOW)
+    )
+    orch.tick(S2_NOW)
+    record = orch._equity_positions["RIVN"]
+
+    # Simulate the resting buy-stop filling on Alpaca's side.
+    stop_blob = alpaca.orders_by_id[record.stop_order_id]
+    stop_blob.status = "filled"
+    stop_blob.filled_avg_price = 186.95
+    stop_blob.filled_at = S2_NOW + timedelta(minutes=10)
+
+    orch.tick(S2_NOW + timedelta(minutes=11))
+
+    assert orch._equity_positions == {}
+    with conn.cursor() as cur:
+        cur.execute("SELECT exit_reason, gross_pnl FROM scanner_trades")
+        reason, pnl = cur.fetchone()
+    assert reason == "stop_hit"
+    assert Decimal(pnl) == Decimal("-9.25")      # (185.10 - 186.95) * 5
+
+
+def test_scanner_positions_flattened_at_1555(conn: psycopg.Connection) -> None:
+    _clean_scanner_trades(conn)
+    orch, alpaca, _ = _orch(conn=conn, config=_armed_config())
+    alpaca.next_fill = Decimal("185.10")
+    orch._scanner_signal_queue.put(
+        _scanner_signal(failure_ts=S2_FAILURE_TS, detected_at=S2_NOW)
+    )
+    orch.tick(S2_NOW)
+    assert "RIVN" in orch._equity_positions
+
+    # 15:56 ET the same day (19:56 UTC).
+    alpaca.next_fill = Decimal("185.50")
+    orch.tick(datetime(2026, 5, 13, 19, 56, tzinfo=timezone.utc))
+
+    assert orch._equity_positions == {}
+    with conn.cursor() as cur:
+        cur.execute("SELECT exit_reason FROM scanner_trades")
+        (reason,) = cur.fetchone()
+    assert reason == "eod_failsafe"
+
+
+def test_scanner_max_concurrent_enforced(conn: psycopg.Connection) -> None:
+    _clean_scanner_trades(conn)
+    orch, alpaca, _ = _orch(conn=conn, config=_armed_config())
+
+    # Fill 3 entries (each entry consumes one next_fill; stop orders
+    # submit as status=new and don't consume it).
+    for i, tkr in enumerate(("AAA", "BBB", "CCC", "DDD")):
+        alpaca.next_fill = Decimal("185.10")
+        orch._scanner_signal_queue.put(_scanner_signal(
+            failure_ts=S2_FAILURE_TS, detected_at=S2_NOW, ticker=tkr,
+        ))
+        orch.tick(S2_NOW)
+
+    assert set(orch._equity_positions) == {"AAA", "BBB", "CCC"}
+    assert len(journal.open_scanner_trades(conn)) == 3

@@ -228,6 +228,57 @@ class Executor:
         order = self._client.submit_order(req)
         return _to_paper_order(order)
 
+    def submit_market_buy(
+        self,
+        symbol: str,
+        qty: int,
+        *,
+        client_order_id: str | None = None,
+    ) -> PaperOrder:
+        """Market buy — covers a scanner equity short (Phase S2). On an
+        equity symbol with no position this would OPEN a long, so callers
+        only use it against a tracked short."""
+        from alpaca.trading.enums import OrderSide, TimeInForce
+        from alpaca.trading.requests import MarketOrderRequest
+
+        cid = client_order_id or _new_client_order_id("cover")
+        req = MarketOrderRequest(
+            symbol=symbol,
+            qty=qty,
+            side=OrderSide.BUY,
+            time_in_force=TimeInForce.DAY,
+            client_order_id=cid,
+        )
+        logger.info("submit_market_buy %s qty=%s cid=%s", symbol, qty, cid)
+        order = self._client.submit_order(req)
+        return _to_paper_order(order)
+
+    def submit_stop_buy(
+        self,
+        symbol: str,
+        qty: int,
+        stop_price: Decimal,
+        *,
+        client_order_id: str | None = None,
+    ) -> PaperOrder:
+        """Protective buy-stop above a short entry (Phase S2) — the
+        mirror of submit_stop_sell for the equity-short book."""
+        from alpaca.trading.enums import OrderSide, TimeInForce
+        from alpaca.trading.requests import StopOrderRequest
+
+        cid = client_order_id or _new_client_order_id("bstop")
+        req = StopOrderRequest(
+            symbol=symbol,
+            qty=qty,
+            side=OrderSide.BUY,
+            time_in_force=TimeInForce.DAY,
+            stop_price=float(stop_price),
+            client_order_id=cid,
+        )
+        logger.info("submit_stop_buy %s qty=%s stop=%s cid=%s", symbol, qty, stop_price, cid)
+        order = self._client.submit_order(req)
+        return _to_paper_order(order)
+
     # ---- Order lifecycle ---------------------------------------------------
 
     def get_order(self, alpaca_order_id: str) -> PaperOrder:

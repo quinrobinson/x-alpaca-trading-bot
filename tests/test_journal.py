@@ -229,3 +229,105 @@ def test_duplicate_post_id_upserts_preserves_id(conn: psycopg.Connection) -> Non
         count, max_actionable = cur.fetchone()
     assert count == 1  # upsert, not duplicate insert
     assert max_actionable == 1  # actionable updated to True on re-deliver
+
+
+# ---- Scanner equity trades (SCANNER_PROGRAM.md Phase S2) -------------------
+
+def _clean_scanner_trades(conn: psycopg.Connection) -> None:
+    with conn.cursor() as cur:
+        cur.execute("DELETE FROM scanner_trades")
+    conn.commit()
+
+
+def test_scanner_trade_open_close_roundtrip(conn: psycopg.Connection) -> None:
+    _clean_scanner_trades(conn)
+    opened_at = datetime(2026, 8, 4, 14, 0, tzinfo=timezone.utc)
+
+    trade_id = journal.insert_scanner_trade(
+        conn,
+        scanner_name="failed_breakout",
+        ticker="RIVN",
+        event_day=date(2026, 8, 4),
+        qty=59,
+        entry_price=Decimal("16.69"),
+        opened_at=opened_at,
+        entry_order_id="ord-entry-1",
+        stop_order_id="ord-stop-1",
+    )
+    assert trade_id is not None
+
+    open_rows = journal.open_scanner_trades(conn)
+    assert [r["id"] for r in open_rows] == [trade_id]
+    assert open_rows[0]["ticker"] == "RIVN"
+
+    journal.close_scanner_trade(
+        conn,
+        trade_id=trade_id,
+        closed_at=opened_at.replace(hour=15),
+        exit_price=Decimal("16.59"),
+        exit_reason="time_exit",
+        gross_pnl=Decimal("5.90"),
+        pnl_pct=Decimal("0.0060"),
+        exit_order_id="ord-exit-1",
+    )
+    assert journal.open_scanner_trades(conn) == []
+
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT exit_reason, gross_pnl, exit_order_id FROM scanner_trades WHERE id = %s",
+            (trade_id,),
+        )
+        reason, pnl, exit_oid = cur.fetchone()
+    assert reason == "time_exit"
+    assert Decimal(pnl) == Decimal("5.90")
+    assert exit_oid == "ord-exit-1"
+
+
+def test_scanner_trade_unique_guard_blocks_double_entry(conn: psycopg.Connection) -> None:
+    """One scanner event (scanner_name, ticker, event_day) can never open
+    two trades — the second insert returns None."""
+    _clean_scanner_trades(conn)
+    opened_at = datetime(2026, 8, 4, 14, 0, tzinfo=timezone.utc)
+    kwargs = dict(
+        scanner_name="failed_breakout",
+        ticker="RIVN",
+        event_day=date(2026, 8, 4),
+        qty=59,
+        entry_price=Decimal("16.69"),
+        opened_at=opened_at,
+        entry_order_id="ord-entry-1",
+        stop_order_id=None,
+    )
+    first = journal.insert_scanner_trade(conn, **kwargs)
+    second = journal.insert_scanner_trade(conn, **kwargs)
+    assert first is not None
+    assert second is None
+
+
+def test_scanner_realized_pnl_today_sums_scanner_book(conn: psycopg.Connection) -> None:
+    from x_alpaca_trading_bot import risk_manager
+
+    _clean_scanner_trades(conn)
+    today = date(2026, 8, 4)
+    opened_at = datetime(2026, 8, 4, 14, 0, tzinfo=timezone.utc)
+
+    for i, pnl in enumerate((Decimal("5.90"), Decimal("-12.00"))):
+        tid = journal.insert_scanner_trade(
+            conn,
+            scanner_name="failed_breakout",
+            ticker=f"TICK{i}",
+            event_day=today,
+            qty=10,
+            entry_price=Decimal("10.00"),
+            opened_at=opened_at,
+            entry_order_id=None,
+            stop_order_id=None,
+        )
+        journal.close_scanner_trade(
+            conn, trade_id=tid, closed_at=opened_at.replace(hour=15),
+            exit_price=Decimal("10.00"), exit_reason="time_exit",
+            gross_pnl=pnl, pnl_pct=Decimal("0"), exit_order_id=None,
+        )
+
+    total = risk_manager.scanner_realized_pnl_today(conn, today)
+    assert total == Decimal("-6.10")

@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass
+from datetime import time
 from decimal import Decimal
 from pathlib import Path
 
@@ -31,6 +32,25 @@ REQUIRED_VARS: tuple[str, ...] = (
     "TELEGRAM_BOT_TOKEN",
     "TELEGRAM_CHAT_ID",
 )
+
+
+def _parse_cutoff(raw: str) -> time | None:
+    """Parse SCANNER_BREAKOUT_CUTOFF ("HH:MM", ET wall clock) or None.
+
+    A malformed value raises rather than silently reverting to the
+    default — a mis-set cutoff would quietly change which events get
+    logged, which is exactly the kind of drift Phase A exists to avoid.
+    """
+    raw = raw.strip()
+    if not raw:
+        return None
+    try:
+        hh, mm = raw.split(":")
+        return time(int(hh), int(mm))
+    except (ValueError, TypeError) as exc:
+        raise RuntimeError(
+            f"SCANNER_BREAKOUT_CUTOFF must be HH:MM (got {raw!r})"
+        ) from exc
 
 
 def assert_paper_mode(base_url: str) -> None:
@@ -90,6 +110,25 @@ class Config:
     # None means "use scanners.failed_breakout.DEFAULT_UNIVERSE". A comma-
     # separated string overrides — same shape as X_TARGET_ACCOUNT_IDS.
     scanner_universe: tuple[str, ...] | None = None
+    # Latest ET wall-clock time for a breakout to qualify. None means "use
+    # scanners.failed_breakout.DEFAULT_BREAKOUT_CUTOFF" (10:30 ET as of
+    # 2026-07-30; late-morning failures showed no edge in the live sample).
+    # Env format: SCANNER_BREAKOUT_CUTOFF=HH:MM.
+    scanner_breakout_cutoff: time | None = None
+    # Which lab hypotheses run (SCANNER_PROGRAM.md Phase S1). None means
+    # all registered in scanners.lab.HYPOTHESES. Comma-separated names;
+    # unknown names fail startup (validated in main via resolve_hypotheses).
+    scanner_hypotheses: tuple[str, ...] | None = None
+
+    # Phase S2 — shares-based execution of the validated failed-breakout
+    # slice. Ships DISARMED (owner decision 2026-08-04): the arm switch
+    # stays false until ~4 weeks of fresh volume_ratio data confirm the
+    # slice out-of-sample. Entry filter, sizing, and caps are
+    # owner-confirmed in SCANNER_PROGRAM.md.
+    scanner_trading_enabled: bool = False
+    scanner_trade_notional: Decimal = Decimal("1000")
+    scanner_max_concurrent: int = 3
+    scanner_min_volume_ratio: Decimal = Decimal("1.0")
 
     # Operator switches
     disable_x_stream: bool = False        # skip X stream connect + suppress x_stream kill switch
@@ -171,6 +210,30 @@ class Config:
                 )
                 if os.environ.get("SCANNER_UNIVERSE", "").strip()
                 else None
+            ),
+            scanner_breakout_cutoff=_parse_cutoff(
+                os.environ.get("SCANNER_BREAKOUT_CUTOFF", "")
+            ),
+            scanner_hypotheses=(
+                tuple(
+                    h.strip() for h in os.environ["SCANNER_HYPOTHESES"].split(",")
+                    if h.strip()
+                )
+                if os.environ.get("SCANNER_HYPOTHESES", "").strip()
+                else None
+            ),
+            scanner_trading_enabled=(
+                os.environ.get("SCANNER_TRADING_ENABLED", "").lower()
+                in ("1", "true", "yes")
+            ),
+            scanner_trade_notional=Decimal(
+                os.environ.get("SCANNER_TRADE_NOTIONAL", "1000")
+            ),
+            scanner_max_concurrent=int(
+                os.environ.get("SCANNER_MAX_CONCURRENT", "3")
+            ),
+            scanner_min_volume_ratio=Decimal(
+                os.environ.get("SCANNER_MIN_VOLUME_RATIO", "1.0")
             ),
             disable_x_stream=os.environ.get("DISABLE_X_STREAM", "").lower() in ("1", "true", "yes"),
         )

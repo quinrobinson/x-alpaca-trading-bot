@@ -14,7 +14,9 @@ from zoneinfo import ZoneInfo
 import pytest
 
 from x_alpaca_trading_bot.scanners.failed_breakout import (
+    BARS_PER_RTH_SESSION,
     Bar,
+    DataServiceBarSource,
     FailedBreakout,
     FailedBreakoutScanner,
     find_failed_breakout,
@@ -95,13 +97,40 @@ def test_breakout_before_earliest_window_ignored() -> None:
 
 
 def test_breakout_at_or_after_cutoff_ignored() -> None:
-    """A breakout at 12:00 (cutoff) or later does NOT count."""
+    """A breakout at the default cutoff (10:30) or later does NOT count."""
     bars = [
         _bar(9, 35, 99.0),
-        _bar(12, 0, 100.5),   # at cutoff — excluded
-        _bar(12, 5, 99.0),
+        _bar(10, 30, 100.5),  # at cutoff — excluded
+        _bar(10, 35, 99.0),
     ]
     assert find_failed_breakout("AAPL", bars, prior_high=100.0) is None
+
+
+def test_breakout_just_before_cutoff_counts() -> None:
+    """10:25 is inside the default 09:35-10:30 window."""
+    bars = [
+        _bar(9, 35, 99.0),
+        _bar(10, 25, 100.5),  # breakout, 5 min before cutoff
+        _bar(10, 35, 99.0),   # failure
+    ]
+    event = find_failed_breakout("AAPL", bars, prior_high=100.0)
+    assert event is not None
+    assert event.breakout_price == 100.5
+
+
+def test_custom_cutoff_widens_window() -> None:
+    """An explicit cutoff (e.g. the backtest's original 12:00) re-admits
+    late-morning breakouts the tightened default rejects."""
+    bars = [
+        _bar(9, 35, 99.0),
+        _bar(11, 0, 100.5),   # after default cutoff, before custom
+        _bar(11, 10, 99.0),
+    ]
+    assert find_failed_breakout("AAPL", bars, prior_high=100.0) is None
+    event = find_failed_breakout(
+        "AAPL", bars, prior_high=100.0, breakout_cutoff=time(12, 0)
+    )
+    assert event is not None
 
 
 def test_failure_outside_window_returns_none() -> None:
@@ -172,7 +201,9 @@ class _FakeBarSource:
 
     bars_by_key: dict[tuple[str, date], list[Bar]] = field(default_factory=dict)
     high_by_key: dict[tuple[str, date], float | None] = field(default_factory=dict)
+    baseline_by_key: dict[tuple[str, date], float | None] = field(default_factory=dict)
     raises_for: set[str] = field(default_factory=set)
+    baseline_raises_for: set[str] = field(default_factory=set)
 
     def get_intraday_bars(self, ticker: str, day: date) -> list[Bar]:
         if ticker in self.raises_for:
@@ -181,6 +212,11 @@ class _FakeBarSource:
 
     def get_prior_day_high(self, ticker: str, day: date) -> float | None:
         return self.high_by_key.get((ticker, day))
+
+    def get_baseline_bar_volume(self, ticker: str, day: date) -> float | None:
+        if ticker in self.baseline_raises_for:
+            raise RuntimeError(f"baseline fetch failed for {ticker}")
+        return self.baseline_by_key.get((ticker, day))
 
 
 def _now_et(hh: int = 11, mm: int = 0, day: int = 6) -> datetime:
@@ -328,3 +364,150 @@ def test_scanner_normalizes_universe_to_uppercase_and_strips() -> None:
         record_event=lambda n, e, t: True,
     )
     assert scanner._universe == ("AAPL", "MSFT", "TSLA")
+
+
+# ---- Per-ticker baseline volume -------------------------------------------
+
+def _failed_bars_with_volume_spike() -> list[Bar]:
+    return [
+        _bar(9, 35, 99.5, volume=1000),
+        _bar(9, 40, 100.5, volume=1000),
+        _bar(9, 50, 99.0, volume=5000),  # failure bar, 5x volume
+    ]
+
+
+def test_scan_uses_per_ticker_baseline_from_bar_source() -> None:
+    """Production path: no constructor baseline, so the scanner asks the
+    bar source per ticker and the logged event carries volume_ratio."""
+    day = date(2026, 6, 6)
+    src = _FakeBarSource(
+        bars_by_key={("AAPL", day): _failed_bars_with_volume_spike()},
+        high_by_key={("AAPL", day): 100.0},
+        baseline_by_key={("AAPL", day): 1000.0},
+    )
+    scanner = FailedBreakoutScanner(
+        universe=["AAPL"], bar_source=src, record_event=lambda n, e, t: True
+    )
+    new_events = scanner.scan(_now_et())
+    assert len(new_events) == 1
+    assert new_events[0].volume_ratio == 5.0
+
+
+def test_constructor_baseline_overrides_bar_source() -> None:
+    day = date(2026, 6, 6)
+    src = _FakeBarSource(
+        bars_by_key={("AAPL", day): _failed_bars_with_volume_spike()},
+        high_by_key={("AAPL", day): 100.0},
+        baseline_by_key={("AAPL", day): 1000.0},  # would give 5.0
+    )
+    scanner = FailedBreakoutScanner(
+        universe=["AAPL"],
+        bar_source=src,
+        record_event=lambda n, e, t: True,
+        baseline_volume=2500.0,  # explicit override → 2.0
+    )
+    new_events = scanner.scan(_now_et())
+    assert new_events[0].volume_ratio == 2.0
+
+
+def test_baseline_fetch_failure_does_not_suppress_detection() -> None:
+    """A broken baseline fetch degrades to volume_ratio=None — the event
+    itself must still be detected and recorded."""
+    day = date(2026, 6, 6)
+    src = _FakeBarSource(
+        bars_by_key={("AAPL", day): _failed_bars_with_volume_spike()},
+        high_by_key={("AAPL", day): 100.0},
+        baseline_raises_for={"AAPL"},
+    )
+    scanner = FailedBreakoutScanner(
+        universe=["AAPL"], bar_source=src, record_event=lambda n, e, t: True
+    )
+    new_events = scanner.scan(_now_et())
+    assert len(new_events) == 1
+    assert new_events[0].volume_ratio is None
+
+
+def test_scanner_respects_custom_breakout_cutoff() -> None:
+    """An 11:00 breakout is rejected by the default 10:30 cutoff but
+    admitted when the scanner is built with the old 12:00 cutoff."""
+    day = date(2026, 6, 6)
+    late_bars = [
+        _bar(9, 35, 99.0),
+        _bar(11, 0, 100.5),
+        _bar(11, 10, 99.0),
+    ]
+    src = _FakeBarSource(
+        bars_by_key={("AAPL", day): late_bars},
+        high_by_key={("AAPL", day): 100.0},
+    )
+
+    default_scanner = FailedBreakoutScanner(
+        universe=["AAPL"], bar_source=src, record_event=lambda n, e, t: True
+    )
+    assert default_scanner.scan(_now_et(hh=13)) == []
+
+    wide_scanner = FailedBreakoutScanner(
+        universe=["AAPL"],
+        bar_source=src,
+        record_event=lambda n, e, t: True,
+        breakout_cutoff=time(12, 0),
+    )
+    assert len(wide_scanner.scan(_now_et(hh=13))) == 1
+
+
+# ---- DataServiceBarSource baseline ----------------------------------------
+
+@dataclass(frozen=True)
+class _FakeDailyBar:
+    """Duck-typed stand-in for data_service.OHLCBar."""
+    ts: datetime
+    high: float
+    volume: int
+
+
+class _FakeDataService:
+    """Returns canned daily bars and counts fetches (for the cache test)."""
+
+    def __init__(self, daily_bars: list[_FakeDailyBar]) -> None:
+        self._daily = daily_bars
+        self.daily_calls = 0
+
+    def get_recent_daily_bars(self, ticker: str, now: datetime, *, limit: int):
+        self.daily_calls += 1
+        return self._daily[-limit:]
+
+
+def _daily_bar(day: int, volume: int) -> _FakeDailyBar:
+    ts_et = datetime(2026, 6, day, 16, 0, tzinfo=ET)
+    return _FakeDailyBar(ts=ts_et.astimezone(timezone.utc), high=100.0, volume=volume)
+
+
+def test_baseline_is_mean_daily_volume_over_78() -> None:
+    """Baseline = mean daily volume of sessions BEFORE the target day,
+    divided by the 78 5-min bars in an RTH session."""
+    ds = _FakeDataService([
+        _daily_bar(2, 780_000),
+        _daily_bar(3, 1_560_000),
+        _daily_bar(6, 9_999_999),  # target day itself — must be excluded
+    ])
+    src = DataServiceBarSource(ds)
+    baseline = src.get_baseline_bar_volume("AAPL", date(2026, 6, 6))
+    # mean(780k, 1.56M) / 78 = 1.17M / 78 = 15_000
+    assert baseline == pytest.approx(1_170_000 / BARS_PER_RTH_SESSION)
+
+
+def test_baseline_none_when_no_prior_days() -> None:
+    ds = _FakeDataService([_daily_bar(6, 780_000)])  # only the target day
+    src = DataServiceBarSource(ds)
+    assert src.get_baseline_bar_volume("AAPL", date(2026, 6, 6)) is None
+
+
+def test_baseline_cached_per_ticker_day() -> None:
+    """Second lookup for the same (ticker, day) must not refetch — the
+    scan loop calls this every 5 minutes."""
+    ds = _FakeDataService([_daily_bar(2, 780_000), _daily_bar(3, 780_000)])
+    src = DataServiceBarSource(ds)
+    first = src.get_baseline_bar_volume("AAPL", date(2026, 6, 6))
+    second = src.get_baseline_bar_volume("AAPL", date(2026, 6, 6))
+    assert first == second
+    assert ds.daily_calls == 1

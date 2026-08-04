@@ -16,11 +16,19 @@ Live scanner contract — Phase A
 3. If detected and not already recorded, write a row to scanner_events.
 4. Phase A is log-only — no orchestrator wiring, no orders submitted.
 
-Detection params match the backtest:
-    breakout window: 09:35 - 12:00 ET (first bar closing above prior-day high)
+Detection params:
+    breakout window: 09:35 - 10:30 ET (first bar closing above prior-day high)
     failure  window: 60 min after breakout (first subsequent bar closing
                      back below the prior-day high)
     one event max per ticker per day (DB UNIQUE enforces this)
+
+The breakout cutoff was 12:00 ET (matching the backtest) through
+2026-07-30. Scoring the first 132 live events with forward returns
+(research/evaluate_scanner_events.py) showed failures after ~10:30 ET
+carried no downside drift — +0.26% mean at 60m, 37% down-hit — while
+pre-10:30 failures kept the edge (-0.45% at 60m). The cutoff moved to
+10:30 so Phase A logs concentrate on the slice that works. Override via
+SCANNER_BREAKOUT_CUTOFF if experimenting.
 
 State and idempotency
 ---------------------
@@ -49,10 +57,16 @@ logger = logging.getLogger(__name__)
 
 ET = ZoneInfo("America/New_York")
 
-# Detection defaults match research/backtest_failed_breakout.py.
+# Earliest-breakout and failure-window defaults match
+# research/backtest_failed_breakout.py. The cutoff is deliberately
+# tighter than the backtest's 12:00 — see the module docstring.
 DEFAULT_EARLIEST_BREAKOUT = time(9, 35)
-DEFAULT_BREAKOUT_CUTOFF = time(12, 0)
+DEFAULT_BREAKOUT_CUTOFF = time(10, 30)
 DEFAULT_FAILURE_WINDOW_MINUTES = 60
+
+# 5-min bars in a regular 09:30-16:00 session — converts mean daily
+# volume into an approximate mean bar volume for the ratio baseline.
+BARS_PER_RTH_SESSION = 78
 
 
 # ---- Bar primitive --------------------------------------------------------
@@ -185,6 +199,12 @@ class BarSource(Protocol):
     def get_intraday_bars(self, ticker: str, day: date) -> list[Bar]: ...
     def get_prior_day_high(self, ticker: str, day: date) -> float | None: ...
 
+    def get_baseline_bar_volume(self, ticker: str, day: date) -> float | None:
+        """Mean 5-min bar volume for the ticker over recent sessions, used
+        as the denominator of volume_ratio. None when unavailable — the
+        event is still logged, just without a ratio."""
+        ...
+
 
 class FailedBreakoutScanner:
     """One scan pass per call. Stateless across calls.
@@ -206,11 +226,15 @@ class FailedBreakoutScanner:
         bar_source: BarSource,
         record_event: "RecordEventCallable",
         baseline_volume: float | None = None,
+        breakout_cutoff: time | None = None,
     ) -> None:
         self._universe = tuple(t.strip().upper() for t in universe if t.strip())
         self._bar_source = bar_source
         self._record_event = record_event
+        # Global override for tests / experiments. When None (production),
+        # each ticker's baseline comes from bar_source.get_baseline_bar_volume.
         self._baseline_volume = baseline_volume
+        self._breakout_cutoff = breakout_cutoff or DEFAULT_BREAKOUT_CUTOFF
 
     def scan(self, now: datetime) -> list[FailedBreakout]:
         """Run one scan pass. Returns the list of NEW events recorded.
@@ -237,12 +261,27 @@ class FailedBreakoutScanner:
             if prior_high is None or not bars:
                 continue
 
+            # Baseline volume is best-effort: a failed fetch must not
+            # suppress detection, it just leaves volume_ratio NULL.
+            baseline = self._baseline_volume
+            if baseline is None:
+                try:
+                    baseline = self._bar_source.get_baseline_bar_volume(
+                        ticker, today_et
+                    )
+                except Exception:  # noqa: BLE001
+                    logger.exception(
+                        "scanner: baseline volume fetch failed for %s", ticker
+                    )
+                    baseline = None
+
             try:
                 event = find_failed_breakout(
                     ticker,
                     bars,
                     prior_high,
-                    baseline_volume=self._baseline_volume,
+                    breakout_cutoff=self._breakout_cutoff,
+                    baseline_volume=baseline,
                 )
             except Exception:  # noqa: BLE001
                 logger.exception("scanner: detection raised for %s", ticker)
@@ -300,8 +339,16 @@ class DataServiceBarSource:
     coupling one-directional and small.
     """
 
+    # Daily bars fetched per baseline computation. ~20 gives a stable
+    # month-of-trading average without a heavy request.
+    BASELINE_LOOKBACK_DAYS = 20
+
     def __init__(self, data_service: "Any") -> None:
         self._ds = data_service
+        # Baseline volume is a property of (ticker, trading day) — it
+        # cannot change intraday, so cache it to keep the every-5-min
+        # scan loop at two API calls per ticker instead of three.
+        self._baseline_cache: dict[tuple[str, date], float | None] = {}
 
     def get_intraday_bars(self, ticker: str, day: date) -> list[Bar]:
         # Use a "now" anchored on the target day so the data_service's
@@ -338,6 +385,36 @@ class DataServiceBarSource:
         if not candidates:
             return None
         return float(candidates[-1].high)
+
+    def get_baseline_bar_volume(self, ticker: str, day: date) -> float | None:
+        """Mean 5-min bar volume, approximated as mean daily volume over
+        the prior ~20 sessions divided by 78 RTH bars.
+
+        Alpaca daily-bar volume includes extended hours, so the baseline
+        skews slightly high and ratios slightly low versus the pure-RTH
+        baseline used in research/evaluate_scanner_events.py. That bias
+        is uniform across events — fine for ranking and thresholding,
+        just don't compare absolute ratios across the two sources.
+        """
+        key = (ticker, day)
+        if key in self._baseline_cache:
+            return self._baseline_cache[key]
+
+        now = datetime.combine(day, time(20, 0), tzinfo=ET).astimezone(timezone.utc)
+        daily = self._ds.get_recent_daily_bars(
+            ticker, now, limit=self.BASELINE_LOOKBACK_DAYS + 1
+        )
+        vols = [
+            float(b.volume) for b in daily
+            if et_date(b.ts) < day and float(b.volume) > 0
+        ]
+        baseline: float | None
+        if vols:
+            baseline = (sum(vols) / len(vols)) / BARS_PER_RTH_SESSION
+        else:
+            baseline = None
+        self._baseline_cache[key] = baseline
+        return baseline
 
 
 # ---- DEFAULT_UNIVERSE -----------------------------------------------------

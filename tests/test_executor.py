@@ -253,6 +253,24 @@ def test_submit_market_sell_records_order(executor: Executor) -> None:
     assert order.order_type == "market"
 
 
+# ---- Equity primitives (scanner Phase S2) ---------------------------------
+
+def test_submit_market_buy_records_order(executor: Executor) -> None:
+    order = executor.submit_market_buy("RIVN", qty=59)
+    assert order.side == "buy"
+    assert order.order_type == "market"
+    assert order.qty == 59
+    assert order.client_order_id.startswith("xab-cover-")
+
+
+def test_submit_stop_buy_records_order(executor: Executor) -> None:
+    order = executor.submit_stop_buy("RIVN", qty=59, stop_price=Decimal("16.86"))
+    assert order.side == "buy"
+    assert order.order_type == "stop"
+    assert order.stop_price == Decimal("16.86")
+    assert order.client_order_id.startswith("xab-bstop-")
+
+
 # ---- Order lifecycle ------------------------------------------------------
 
 def test_wait_for_fill_returns_fill_when_filled(executor: Executor, fake_client: FakeTradingClient) -> None:
