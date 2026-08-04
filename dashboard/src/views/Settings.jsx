@@ -101,8 +101,26 @@ export default function Settings() {
         {loaded && (
           <form onSubmit={onSubmit} className="space-y-4">
             <Field
+              label="Daily loss kill threshold"
+              hint="Stops new entries when realized + unrealized P&L drops by this fraction of starting equity. Applies to BOTH books — the scanner equity book shares this kill switch. Allowed: 0.1%–50%."
+              suffix="%"
+              value={killPct}
+              onChange={setKillPct}
+              inputMode="decimal"
+              min="0.1"
+              max="50"
+              step="0.1"
+            />
+
+            <div
+              className="mono-label pt-2"
+              style={{ fontSize: 10, letterSpacing: '0.16em', color: 'var(--fg-dim)' }}
+            >
+              Legacy · X options (retired)
+            </div>
+            <Field
               label="Max position spend"
-              hint="Dollar cap per entry. Contract qty is derived from this and the live ask. Allowed: $1–$100,000."
+              hint="Legacy: applied only to X-signal option entries. The retired X pipeline no longer produces entries; the scanner book sizes via SCANNER_TRADE_NOTIONAL instead."
               suffix="USD"
               value={spend}
               onChange={setSpend}
@@ -113,7 +131,7 @@ export default function Settings() {
             />
             <Field
               label="Max qty per position"
-              hint="Ceiling on contracts so a cheap option doesn't blow up size. Allowed: 1–100."
+              hint="Legacy: contract ceiling for X-signal option entries. No effect on the scanner book."
               value={maxQty}
               onChange={setMaxQty}
               type="number"
@@ -121,21 +139,9 @@ export default function Settings() {
               max="100"
               step="1"
             />
-            <Field
-              label="Daily loss kill threshold"
-              hint="Stops new entries when realized + unrealized P&L drops by this fraction of starting equity. Allowed: 0.1%–50%."
-              suffix="%"
-              value={killPct}
-              onChange={setKillPct}
-              inputMode="decimal"
-              min="0.1"
-              max="50"
-              step="0.1"
-            />
-
             <ToggleField
-              label="Pause new entries"
-              hint="When on, incoming X posts are dropped before parsing. The X stream stays connected (no restart needed), and the x_stream_disconnected kill switch is suppressed."
+              label="Pause X entries"
+              hint="Legacy: drops incoming X posts before parsing. The X strategy is retired and the stream is off, so this is a belt-and-suspenders hold. The scanner book arms via SCANNER_TRADING_ENABLED (env, requires restart)."
               checked={disableXStream}
               onChange={setDisableXStream}
             />
