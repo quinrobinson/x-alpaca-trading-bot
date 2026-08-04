@@ -52,7 +52,7 @@ from x_alpaca_trading_bot.parser import (
     parse_post,
     parse_result_to_journal_dict,
 )
-from x_alpaca_trading_bot import risk_manager, strategy, validator
+from x_alpaca_trading_bot import equity_strategy, risk_manager, strategy, validator
 from x_alpaca_trading_bot.snapshot import (
     SnapshotContext,
     SnapshotScheduler,
@@ -249,6 +249,38 @@ class _ManualCloseRequest:
     requested_at: datetime
 
 
+@dataclass(frozen=True)
+class _ScannerSignal:
+    """One newly-recorded scanner event, handed from the scanner thread
+    to the tick loop (Phase S2 entry pipeline). The event is already in
+    scanner_events before it lands here — log-before-act holds."""
+    scanner_name: str
+    ticker: str
+    event_day: date
+    failure_ts: datetime
+    volume_ratio: Decimal | None
+    detected_at: datetime
+
+
+@dataclass
+class EquityPositionRecord:
+    """One open scanner equity short (SCANNER_PROGRAM.md Phase S2).
+
+    `trade_id` is the scanner_trades journal row. `exit_order_id` is set
+    the moment a cover order is submitted — from then on the advance
+    logic only polls that order instead of submitting again, so a slow
+    fill can never double-cover."""
+    trade_id: int | None
+    ticker: str
+    qty: int
+    entry_price: Decimal
+    opened_at: datetime
+    position: equity_strategy.EquityShortPosition
+    stop_order_id: str | None
+    exit_order_id: str | None = None
+    exit_reason_pending: str | None = None
+
+
 # ---- The Orchestrator -----------------------------------------------------
 
 class Orchestrator:
@@ -292,6 +324,11 @@ class Orchestrator:
         self._post_queue: "queue.Queue[_StreamEvent]" = queue.Queue()
         self._manual_close_queue: "queue.Queue[_ManualCloseRequest]" = queue.Queue()
         self._open_positions: dict[int, PositionRecord] = {}
+        # Phase S2: scanner signals cross from the scanner thread to the
+        # tick loop through this queue; open equity shorts are keyed by
+        # ticker (one event — and therefore one trade — per ticker-day).
+        self._scanner_signal_queue: "queue.Queue[_ScannerSignal]" = queue.Queue()
+        self._equity_positions: dict[str, EquityPositionRecord] = {}
         self._state = OrchestratorState()
         self._shutdown_event = threading.Event()
         # Set by the stream callback and the manual-close API so the run
@@ -355,6 +392,7 @@ class Orchestrator:
         """Block until shutdown. Returns exit code."""
         try:
             self._reconcile_on_startup()
+            self._reconcile_scanner_trades_on_startup()
             self._start_stream()
             self._start_scanner_thread()
             logger.info("orchestrator running; tick=%ss", self._tick_seconds)
@@ -429,9 +467,21 @@ class Orchestrator:
         except Exception:  # noqa: BLE001
             logger.exception("check_manual_close_fills failed; continuing")
 
+        # 1d. Drain scanner signals into the S2 entry gate. A no-op when
+        #     SCANNER_TRADING_ENABLED is false beyond emptying the queue.
+        try:
+            self._drain_scanner_signal_queue(now)
+        except Exception:  # noqa: BLE001
+            logger.exception("drain_scanner_signal_queue failed; continuing")
+
         # 2. Mandatory 15:55 ET close — flatten everything if past.
+        #    Equity shorts get their own bookkeeping BEFORE the generic
+        #    option flatten, because _flatten_at_close ends with
+        #    executor.flatten_all() which would close the shorts on
+        #    Alpaca's side and leave their journal rows dangling open.
         try:
             if self._executor.is_at_or_past_close(now):
+                self._flatten_equity_positions(now, reason="eod_failsafe")
                 self._flatten_at_close(now)
                 self._state.last_tick_at = now
                 return
@@ -448,6 +498,13 @@ class Orchestrator:
                     "advance_position failed for signal_id=%s; continuing",
                     record.signal_id,
                 )
+
+        # 3b. Advance the scanner equity book (stop fills, 60-min time
+        #     exit, pending-cover polls). Isolated per position.
+        try:
+            self._advance_equity_positions(now)
+        except Exception:  # noqa: BLE001
+            logger.exception("advance_equity_positions failed; continuing")
 
         # 4. Take any monitor snapshots that came due.
         try:
@@ -764,11 +821,37 @@ class Orchestrator:
     def _scanner_loop(self, interval_seconds: int) -> None:
         """Run scan() periodically until shutdown. Skips scans when the
         cached market_open flag is False — that avoids burning Alpaca
-        bar-fetch credits outside RTH."""
+        bar-fetch credits outside RTH.
+
+        Newly-recorded events are handed to the tick loop through
+        _scanner_signal_queue (Phase S2). The scan itself already
+        journaled them to scanner_events, so log-before-act holds even
+        if the queue hand-off or the tick loop fails."""
         while not self._shutdown_event.is_set():
             try:
                 if self._state.market_open and self._scanner is not None:
-                    self._scanner.scan(datetime.now(timezone.utc))
+                    scanned_at = datetime.now(timezone.utc)
+                    new_events = self._scanner.scan(scanned_at) or []
+                    for item in new_events:
+                        # ScannerLab yields (name, event); the legacy
+                        # FailedBreakoutScanner yields bare events.
+                        if isinstance(item, tuple):
+                            name, event = item
+                        else:
+                            name, event = "failed_breakout", item
+                        self._scanner_signal_queue.put(_ScannerSignal(
+                            scanner_name=name,
+                            ticker=event.ticker,
+                            event_day=event.day,
+                            failure_ts=event.failure_ts,
+                            volume_ratio=(
+                                Decimal(str(event.volume_ratio))
+                                if event.volume_ratio is not None else None
+                            ),
+                            detected_at=scanned_at,
+                        ))
+                    if new_events:
+                        self._wake_event.set()
             except Exception:  # noqa: BLE001
                 logger.exception("scanner iteration failed; continuing")
             self._shutdown_event.wait(timeout=interval_seconds)
@@ -803,6 +886,365 @@ class Orchestrator:
         except Exception:  # noqa: BLE001
             logger.exception("insert_scanner_event failed for %s", event.ticker)
             return False
+
+    # ---- Scanner equity book (SCANNER_PROGRAM.md Phase S2) ------------
+
+    def _drain_scanner_signal_queue(self, now: datetime) -> None:
+        """Run every queued scanner signal through the S2 entry gate.
+
+        The queue is always drained — even disarmed — so signals can't
+        pile up across a day and then fire stale the moment the operator
+        arms the switch (the stale_event gate would reject them anyway;
+        this keeps the queue from being a footgun at all).
+        """
+        while True:
+            try:
+                sig = self._scanner_signal_queue.get_nowait()
+            except queue.Empty:
+                return
+            try:
+                self._handle_scanner_signal(sig, now)
+            except Exception:  # noqa: BLE001
+                logger.exception(
+                    "scanner signal handling failed for %s; continuing", sig.ticker
+                )
+
+    def _handle_scanner_signal(self, sig: _ScannerSignal, now: datetime) -> None:
+        armed = self._cfg.scanner_trading_enabled
+        decision = equity_strategy.evaluate_entry(
+            scanner_name=sig.scanner_name,
+            volume_ratio=sig.volume_ratio,
+            failure_ts=sig.failure_ts,
+            now=now,
+            armed=armed,
+            open_position_count=len(self._equity_positions),
+            ticker_already_open=sig.ticker in self._equity_positions,
+            max_concurrent=self._cfg.scanner_max_concurrent,
+            min_volume_ratio=self._cfg.scanner_min_volume_ratio,
+        )
+        if not decision.accepted:
+            # Disarmed is the steady state until the S2 gate — log at
+            # debug so a month of observation doesn't flood the journal.
+            if armed:
+                journal.insert_event(
+                    self._conn, ts=now, severity="info",
+                    category="scanner_trade",
+                    message=f"entry rejected: {decision.reason}",
+                    context={"ticker": sig.ticker,
+                             "scanner": sig.scanner_name,
+                             "volume_ratio": str(sig.volume_ratio)},
+                )
+            logger.debug("scanner entry rejected %s: %s", sig.ticker, decision.reason)
+            return
+
+        # Kill switches gate the scanner book too (shared daily-loss cap).
+        blocked = self._state.active_switches & {
+            "daily_loss", "consecutive_losses", "alpaca_disconnected",
+        }
+        if blocked:
+            journal.insert_event(
+                self._conn, ts=now, severity="warning",
+                category="scanner_trade",
+                message="entry rejected: risk_blocked",
+                context={"ticker": sig.ticker, "switches": sorted(blocked)},
+            )
+            return
+
+        self._open_equity_short(sig, now)
+
+    def _open_equity_short(self, sig: _ScannerSignal, now: datetime) -> None:
+        price = self._ds.get_underlying_price(sig.ticker)
+        if price is None or price <= 0:
+            journal.insert_event(
+                self._conn, ts=now, severity="warning",
+                category="scanner_trade",
+                message="entry aborted: no_price",
+                context={"ticker": sig.ticker},
+            )
+            return
+        qty = equity_strategy.shares_for_notional(
+            self._cfg.scanner_trade_notional, price
+        )
+        if qty <= 0:
+            journal.insert_event(
+                self._conn, ts=now, severity="info",
+                category="scanner_trade",
+                message="entry aborted: price_exceeds_notional",
+                context={"ticker": sig.ticker, "price": str(price)},
+            )
+            return
+
+        # Short entry = market sell with no existing position. A
+        # rejection (hard-to-borrow, halted) is logged and skipped —
+        # never retried (SCANNER_PROGRAM.md).
+        try:
+            order = self._executor.submit_market_sell(sig.ticker, qty)
+        except Exception as exc:  # noqa: BLE001
+            journal.insert_event(
+                self._conn, ts=now, severity="warning",
+                category="scanner_trade",
+                message="entry rejected by broker",
+                context={"ticker": sig.ticker, "error": str(exc)[:300]},
+            )
+            return
+        fill = self._executor.wait_for_fill(
+            order.alpaca_order_id,
+            timeout_seconds=self._cfg.max_fill_wait_seconds,
+        )
+        if fill is None:
+            self._executor.cancel_order(order.alpaca_order_id)
+            journal.insert_event(
+                self._conn, ts=now, severity="warning",
+                category="scanner_trade",
+                message="entry unfilled; canceled",
+                context={"ticker": sig.ticker, "order_id": order.alpaca_order_id},
+            )
+            return
+
+        stop_price = equity_strategy.stop_price_for(fill.fill_price)
+        stop_order_id: str | None = None
+        try:
+            stop_order = self._executor.submit_stop_buy(sig.ticker, qty, stop_price)
+            stop_order_id = stop_order.alpaca_order_id
+        except Exception:  # noqa: BLE001
+            # Position is live but unprotected on the book — the local
+            # stop_backup check in evaluate_exit covers it each tick.
+            logger.exception("stop_buy failed for %s; relying on local backup", sig.ticker)
+
+        trade_id = journal.insert_scanner_trade(
+            self._conn,
+            scanner_name=sig.scanner_name,
+            ticker=sig.ticker,
+            event_day=sig.event_day,
+            qty=qty,
+            entry_price=fill.fill_price,
+            opened_at=fill.filled_at,
+            entry_order_id=order.alpaca_order_id,
+            stop_order_id=stop_order_id,
+        )
+        if trade_id is None:
+            logger.error(
+                "scanner_trades unique guard hit for %s/%s — tracking without row",
+                sig.scanner_name, sig.ticker,
+            )
+        record = EquityPositionRecord(
+            trade_id=trade_id,
+            ticker=sig.ticker,
+            qty=qty,
+            entry_price=fill.fill_price,
+            opened_at=fill.filled_at,
+            position=equity_strategy.EquityShortPosition(
+                ticker=sig.ticker,
+                qty=qty,
+                entry_price=fill.fill_price,
+                entry_time=fill.filled_at,
+                stop_price=stop_price,
+            ),
+            stop_order_id=stop_order_id,
+        )
+        self._equity_positions[sig.ticker] = record
+        logger.info(
+            "scanner short OPEN %s qty=%s @ %s stop=%s trade_id=%s",
+            sig.ticker, qty, fill.fill_price, stop_price, trade_id,
+        )
+        self._broadcast("scanner.trade_entered", {
+            "ticker": sig.ticker, "qty": qty,
+            "entry_price": fill.fill_price, "stop_price": stop_price,
+        })
+
+    def _advance_equity_positions(self, now: datetime) -> None:
+        for record in list(self._equity_positions.values()):
+            try:
+                self._advance_equity_position(record, now)
+            except Exception:  # noqa: BLE001
+                logger.exception(
+                    "advance_equity_position failed for %s; continuing",
+                    record.ticker,
+                )
+
+    def _advance_equity_position(self, record: EquityPositionRecord, now: datetime) -> None:
+        # 0. A cover is already in flight — poll it and book on fill.
+        if record.exit_order_id is not None:
+            exit_order = self._executor.get_order(record.exit_order_id)
+            if (exit_order.status or "").lower() == "filled":
+                self._book_equity_close(
+                    record,
+                    closed_at=exit_order.filled_at or now,
+                    exit_price=exit_order.filled_avg_price,
+                    reason=record.exit_reason_pending or "unknown",
+                    exit_order_id=record.exit_order_id,
+                )
+            return
+
+        # 1. Did the resting protective stop fill?
+        if record.stop_order_id is not None:
+            stop_order = self._executor.get_order(record.stop_order_id)
+            if (stop_order.status or "").lower() == "filled":
+                self._book_equity_close(
+                    record,
+                    closed_at=stop_order.filled_at or now,
+                    exit_price=stop_order.filled_avg_price,
+                    reason="stop_hit",
+                    exit_order_id=record.stop_order_id,
+                )
+                return
+
+        # 2. Time-based exits (+ price backup when a stop isn't resting).
+        current_price: Decimal | None = None
+        if record.stop_order_id is None:
+            try:
+                current_price = self._ds.get_underlying_price(record.ticker)
+            except Exception:  # noqa: BLE001
+                current_price = None
+        reason = equity_strategy.evaluate_exit(record.position, now, current_price)
+        if reason:
+            self._close_equity_position(record, now, reason)
+
+    def _close_equity_position(
+        self, record: EquityPositionRecord, now: datetime, reason: str
+    ) -> None:
+        """Cancel the stop, submit the cover, book immediately on fill —
+        or park the order id for next-tick polling if the fill is slow."""
+        if record.stop_order_id is not None:
+            self._executor.cancel_order(record.stop_order_id)
+            record.stop_order_id = None
+        cover = self._executor.submit_market_buy(record.ticker, record.qty)
+        record.exit_order_id = cover.alpaca_order_id
+        record.exit_reason_pending = reason
+        fill = self._executor.wait_for_fill(
+            cover.alpaca_order_id,
+            timeout_seconds=self._cfg.max_fill_wait_seconds,
+        )
+        if fill is not None:
+            self._book_equity_close(
+                record,
+                closed_at=fill.filled_at,
+                exit_price=fill.fill_price,
+                reason=reason,
+                exit_order_id=cover.alpaca_order_id,
+            )
+        else:
+            logger.warning(
+                "cover slow to fill for %s (order %s); will poll next tick",
+                record.ticker, cover.alpaca_order_id,
+            )
+
+    def _book_equity_close(
+        self,
+        record: EquityPositionRecord,
+        *,
+        closed_at: datetime,
+        exit_price: Decimal | None,
+        reason: str,
+        exit_order_id: str | None,
+    ) -> None:
+        gross: Decimal | None = None
+        pct: Decimal | None = None
+        if exit_price is not None:
+            gross, pct = equity_strategy.short_pnl(
+                record.entry_price, exit_price, record.qty
+            )
+        if record.trade_id is not None:
+            journal.close_scanner_trade(
+                self._conn,
+                trade_id=record.trade_id,
+                closed_at=closed_at,
+                exit_price=exit_price,
+                exit_reason=reason,
+                gross_pnl=gross,
+                pnl_pct=pct,
+                exit_order_id=exit_order_id,
+            )
+        self._equity_positions.pop(record.ticker, None)
+        logger.info(
+            "scanner short CLOSE %s reason=%s exit=%s pnl=%s",
+            record.ticker, reason, exit_price, gross,
+        )
+        self._broadcast("scanner.trade_exited", {
+            "ticker": record.ticker, "reason": reason,
+            "exit_price": exit_price, "gross_pnl": gross,
+        })
+
+    def _flatten_equity_positions(self, now: datetime, *, reason: str) -> None:
+        for record in list(self._equity_positions.values()):
+            try:
+                if record.exit_order_id is None:
+                    self._close_equity_position(record, now, reason)
+            except Exception:  # noqa: BLE001
+                logger.exception("equity flatten failed for %s", record.ticker)
+
+    def _reconcile_scanner_trades_on_startup(self) -> None:
+        """Close out any scanner shorts that were live when the bot died.
+
+        A 60-minute-hold strategy has no business surviving a restart:
+        by the time the process is back the drift window is stale, so we
+        cover at market rather than resume managing. Rows whose Alpaca
+        position vanished (already flat) are closed as orphans with no
+        exit price.
+        """
+        try:
+            open_rows = journal.open_scanner_trades(self._conn)
+        except Exception:  # noqa: BLE001
+            logger.exception("open_scanner_trades failed at startup")
+            return
+        if not open_rows:
+            return
+
+        try:
+            alpaca_short_qty = {
+                p.symbol: -p.qty
+                for p in self._executor.list_open_positions()
+                if p.qty < 0
+            }
+        except Exception:  # noqa: BLE001
+            logger.exception("list_open_positions failed; deferring scanner reconcile")
+            return
+
+        now = datetime.now(timezone.utc)
+        for row in open_rows:
+            ticker = row["ticker"]
+            qty = int(row["qty"])
+            if row["stop_order_id"]:
+                self._executor.cancel_order(row["stop_order_id"])
+            if alpaca_short_qty.get(ticker, 0) >= qty:
+                cover = self._executor.submit_market_buy(ticker, qty)
+                fill = self._executor.wait_for_fill(
+                    cover.alpaca_order_id,
+                    timeout_seconds=self._cfg.max_fill_wait_seconds,
+                )
+                exit_price = fill.fill_price if fill else None
+                gross, pct = (
+                    equity_strategy.short_pnl(
+                        Decimal(str(row["entry_price"])), exit_price, qty
+                    )
+                    if exit_price is not None else (None, None)
+                )
+                journal.close_scanner_trade(
+                    self._conn,
+                    trade_id=row["id"],
+                    closed_at=(fill.filled_at if fill else now),
+                    exit_price=exit_price,
+                    exit_reason="restart_close",
+                    gross_pnl=gross,
+                    pnl_pct=pct,
+                    exit_order_id=cover.alpaca_order_id,
+                )
+                logger.info("restart_close scanner short %s @ %s", ticker, exit_price)
+            else:
+                journal.close_scanner_trade(
+                    self._conn,
+                    trade_id=row["id"],
+                    closed_at=now,
+                    exit_price=None,
+                    exit_reason="orphan_on_restart",
+                    gross_pnl=None,
+                    pnl_pct=None,
+                    exit_order_id=None,
+                )
+                logger.warning(
+                    "scanner trade %s (%s) had no matching Alpaca short; closed as orphan",
+                    row["id"], ticker,
+                )
 
     def _on_x_post(self, post_id: str, post_text: str, posted_at: datetime) -> None:
         """Stream callback (runs in stream thread). Push onto queue + bump heartbeat."""
@@ -1842,7 +2284,10 @@ class Orchestrator:
 
     def _build_session_state(self, now: datetime) -> risk_manager.SessionState:
         today = now.astimezone(timezone.utc).date()
+        # Both books feed the daily-loss kill switch: the legacy X-options
+        # trades table plus the Phase S2 scanner equity book.
         realized = risk_manager.realized_pnl_today(self._conn, today)
+        realized += risk_manager.scanner_realized_pnl_today(self._conn, today)
         # Get-clock is itself a successful Alpaca call; bump the heartbeat
         # before reading it. If get_clock raises, we leave the heartbeat
         # alone and the connection switch will trip on its own.

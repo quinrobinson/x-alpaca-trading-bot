@@ -222,3 +222,31 @@ CREATE TABLE IF NOT EXISTS scanner_events (
 );
 CREATE INDEX IF NOT EXISTS idx_scanner_events_detected ON scanner_events (detected_at DESC);
 CREATE INDEX IF NOT EXISTS idx_scanner_events_ticker_day ON scanner_events (ticker, event_day);
+
+-- Scanner-driven equity trades (SCANNER_PROGRAM.md Phase S2). Deliberately
+-- a separate table from `trades` — that table is the legacy X-options
+-- book (option_type/strike/expiration columns, its own win-rate stats);
+-- mixing books would poison both datasets. The (scanner_name, ticker,
+-- event_day) unique index is the double-entry guard: it mirrors
+-- scanner_events' natural key, so one scanner event can never open two
+-- trades even across restarts.
+CREATE TABLE IF NOT EXISTS scanner_trades (
+    id              BIGSERIAL PRIMARY KEY,
+    scanner_name    TEXT NOT NULL,
+    ticker          TEXT NOT NULL,
+    event_day       DATE NOT NULL,
+    side            TEXT NOT NULL DEFAULT 'short',
+    qty             INTEGER NOT NULL,
+    entry_price     NUMERIC(12, 4) NOT NULL,
+    opened_at       TIMESTAMPTZ NOT NULL,
+    closed_at       TIMESTAMPTZ,
+    exit_price      NUMERIC(12, 4),              -- NULL when closed without a known fill (orphan)
+    gross_pnl       NUMERIC(12, 2),
+    pnl_pct         NUMERIC(8, 4),
+    exit_reason     TEXT,
+    entry_order_id  TEXT,
+    stop_order_id   TEXT,
+    exit_order_id   TEXT,
+    UNIQUE (scanner_name, ticker, event_day)
+);
+CREATE INDEX IF NOT EXISTS idx_scanner_trades_closed ON scanner_trades (closed_at DESC);

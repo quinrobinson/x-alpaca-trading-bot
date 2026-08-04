@@ -442,3 +442,94 @@ def insert_scanner_event(
         row = cur.fetchone()
     conn.commit()
     return row is not None
+
+
+# ---- Scanner equity trades (SCANNER_PROGRAM.md Phase S2) -------------------
+
+def insert_scanner_trade(
+    conn: psycopg.Connection,
+    *,
+    scanner_name: str,
+    ticker: str,
+    event_day: "Any",  # date
+    qty: int,
+    entry_price: Decimal,
+    opened_at: datetime,
+    entry_order_id: str | None,
+    stop_order_id: str | None,
+) -> int | None:
+    """Open one scanner equity short in the journal.
+
+    Returns the new row id, or None when the (scanner_name, ticker,
+    event_day) unique guard blocked it — meaning this scanner event
+    already produced a trade (e.g. a restart replayed the event). The
+    caller treats None as "do not track a second position".
+    """
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            INSERT INTO scanner_trades
+                (scanner_name, ticker, event_day, side, qty, entry_price,
+                 opened_at, entry_order_id, stop_order_id)
+            VALUES (%s, %s, %s, 'short', %s, %s, %s, %s, %s)
+            ON CONFLICT (scanner_name, ticker, event_day) DO NOTHING
+            RETURNING id
+            """,
+            (
+                scanner_name, ticker, event_day, qty, entry_price,
+                opened_at, entry_order_id, stop_order_id,
+            ),
+        )
+        row = cur.fetchone()
+    conn.commit()
+    return row[0] if row else None
+
+
+def close_scanner_trade(
+    conn: psycopg.Connection,
+    *,
+    trade_id: int,
+    closed_at: datetime,
+    exit_price: Decimal | None,
+    exit_reason: str,
+    gross_pnl: Decimal | None,
+    pnl_pct: Decimal | None,
+    exit_order_id: str | None,
+) -> None:
+    """Book the close of one scanner trade. exit_price/pnl may be None
+    for orphan closes (position vanished; no known fill)."""
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            UPDATE scanner_trades
+            SET closed_at = %s, exit_price = %s, exit_reason = %s,
+                gross_pnl = %s, pnl_pct = %s, exit_order_id = %s
+            WHERE id = %s
+            """,
+            (
+                closed_at, exit_price, exit_reason,
+                gross_pnl, pnl_pct, exit_order_id, trade_id,
+            ),
+        )
+    conn.commit()
+
+
+def open_scanner_trades(conn: psycopg.Connection) -> list[dict[str, Any]]:
+    """All scanner trades without a closed_at — used by startup
+    reconciliation to find shorts that were live when the bot stopped."""
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT id, scanner_name, ticker, event_day, qty, entry_price,
+                   opened_at, entry_order_id, stop_order_id
+            FROM scanner_trades
+            WHERE closed_at IS NULL
+            ORDER BY opened_at
+            """
+        )
+        rows = cur.fetchall()
+    cols = (
+        "id", "scanner_name", "ticker", "event_day", "qty", "entry_price",
+        "opened_at", "entry_order_id", "stop_order_id",
+    )
+    return [dict(zip(cols, r)) for r in rows]

@@ -120,6 +120,16 @@ class Config:
     # unknown names fail startup (validated in main via resolve_hypotheses).
     scanner_hypotheses: tuple[str, ...] | None = None
 
+    # Phase S2 — shares-based execution of the validated failed-breakout
+    # slice. Ships DISARMED (owner decision 2026-08-04): the arm switch
+    # stays false until ~4 weeks of fresh volume_ratio data confirm the
+    # slice out-of-sample. Entry filter, sizing, and caps are
+    # owner-confirmed in SCANNER_PROGRAM.md.
+    scanner_trading_enabled: bool = False
+    scanner_trade_notional: Decimal = Decimal("1000")
+    scanner_max_concurrent: int = 3
+    scanner_min_volume_ratio: Decimal = Decimal("1.0")
+
     # Operator switches
     disable_x_stream: bool = False        # skip X stream connect + suppress x_stream kill switch
 
@@ -211,6 +221,19 @@ class Config:
                 )
                 if os.environ.get("SCANNER_HYPOTHESES", "").strip()
                 else None
+            ),
+            scanner_trading_enabled=(
+                os.environ.get("SCANNER_TRADING_ENABLED", "").lower()
+                in ("1", "true", "yes")
+            ),
+            scanner_trade_notional=Decimal(
+                os.environ.get("SCANNER_TRADE_NOTIONAL", "1000")
+            ),
+            scanner_max_concurrent=int(
+                os.environ.get("SCANNER_MAX_CONCURRENT", "3")
+            ),
+            scanner_min_volume_ratio=Decimal(
+                os.environ.get("SCANNER_MIN_VOLUME_RATIO", "1.0")
             ),
             disable_x_stream=os.environ.get("DISABLE_X_STREAM", "").lower() in ("1", "true", "yes"),
         )
