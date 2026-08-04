@@ -27,7 +27,7 @@ export default function Timeline({ items = [], showRejected, onToggleRejected })
       {visible.length === 0 && (
         <div className="card px-6 py-8 text-center text-sm text-fg-dim">
           {items.length === 0
-            ? 'No signals yet.'
+            ? 'Nothing yet. Scanner detections and trades appear here during market hours.'
             : `${items.length} skipped — toggle "Show skipped" to view.`}
         </div>
       )}
@@ -36,13 +36,21 @@ export default function Timeline({ items = [], showRejected, onToggleRejected })
         {groups.map((group) => (
           <DayGroup key={group.key} label={group.label} count={group.items.length}>
             {group.items.map((item) => (
-              <TimelineEntry key={item.x_post_id} item={item} />
+              <TimelineEntry key={item.key ?? item.x_post_id} item={item} />
             ))}
           </DayGroup>
         ))}
       </div>
     </section>
   )
+}
+
+
+const SCANNER_LABELS = {
+  failed_breakout: 'failed breakout',
+  vwap_reject: 'VWAP reject',
+  gap_fade: 'gap fade',
+  prior_low_break: 'prior-low break',
 }
 
 
@@ -75,6 +83,9 @@ function TimelineEntry({ item }) {
     case 'position_open': return <PositionOpenCard item={item} />
     case 'signal_rejected': return <RejectedCard item={item} />
     case 'signal_unactionable': return <UnactionableCard item={item} />
+    case 'scanner_event': return <ScannerEventCard item={item} />
+    case 'scanner_trade_open': return <ScannerTradeCard item={item} />
+    case 'scanner_trade_closed': return <ScannerTradeCard item={item} />
     default: return null
   }
 }
@@ -293,11 +304,100 @@ function UnactionableCard({ item }) {
 }
 
 
+/**
+ * Scanner lab detection — one hypothesis flagged a setup. Log-only in
+ * Phase S1, so the card is informational: which lens, which ticker,
+ * where the confirm printed, on what volume.
+ */
+function ScannerEventCard({ item }) {
+  const vol = item.volume_ratio != null ? Number(item.volume_ratio) : null
+  return (
+    <CardShell tone="default">
+      <div className="flex items-baseline justify-between gap-3">
+        <div className="mono-label" style={{ fontSize: 10 }}>
+          <Dot color="var(--warning)" />
+          scanner · {SCANNER_LABELS[item.scanner_name] ?? item.scanner_name}
+        </div>
+        <div className="text-fg-dim" style={{ fontSize: 11 }}>
+          {fmtRelative(item.ts)}
+        </div>
+      </div>
+      <div className="mt-2.5 flex flex-wrap items-baseline gap-x-5 gap-y-2">
+        <span className="font-mono text-fg font-semibold" style={{ fontSize: 13 }}>
+          {item.ticker}
+        </span>
+        <Pair label="Ref" value={fmtNum(item.prior_high)} />
+        <Pair label="Confirm" value={fmtNum(item.failure_price)} />
+        <span className="ml-auto">
+          <Pair label="Vol×" value={vol != null ? vol.toFixed(2) : '—'} />
+        </span>
+      </div>
+    </CardShell>
+  )
+}
+
+
+/** S2 equity short — open (amber) or closed (win/loss tinted). */
+function ScannerTradeCard({ item }) {
+  const isOpen = item.kind === 'scanner_trade_open'
+  const pnl = item.gross_pnl != null ? Number(item.gross_pnl) : null
+  const pnlPct = item.pnl_pct != null ? Number(item.pnl_pct) : null
+  const tone = isOpen ? 'open' : pnl > 0 ? 'win' : 'loss'
+  return (
+    <CardShell tone={tone}>
+      <div className="flex items-baseline justify-between gap-3">
+        <div className="mono-label" style={{ fontSize: 10 }}>
+          <Dot color={isOpen ? 'var(--warning)' : pnl > 0 ? 'var(--positive)' : 'var(--negative)'} />
+          {isOpen
+            ? 'scanner short · open'
+            : `scanner short · closed · ${item.exit_reason ?? '—'}`}
+        </div>
+        <div className="text-fg-dim" style={{ fontSize: 11 }}>
+          {fmtRelative(item.ts)}
+        </div>
+      </div>
+      {!isOpen && pnlPct != null && (
+        <div className="mt-1.5 flex items-baseline gap-3">
+          <span className={`text-lg font-bold tracking-tight ${pnlColorClass(pnlPct)}`}>
+            {fmtPct(pnlPct)}
+          </span>
+          {pnl != null && (
+            <span className={`text-sm font-mono ${pnlColorClass(pnl)}`}>{fmtMoney(pnl)}</span>
+          )}
+        </div>
+      )}
+      <div className="mt-3 pt-3 border-t border-border flex flex-wrap items-baseline gap-x-5 gap-y-2">
+        <span className="font-mono text-fg" style={{ fontSize: 12 }}>
+          {item.ticker} × {item.qty}
+        </span>
+        <span className="ml-auto inline-flex items-baseline gap-2">
+          <Pair label="Entry" value={fmtNum(item.entry_price)} />
+          {!isOpen && (
+            <>
+              <span className="text-fg-faint" aria-hidden="true">→</span>
+              <Pair label="Exit" value={fmtNum(item.exit_price)} />
+            </>
+          )}
+        </span>
+      </div>
+    </CardShell>
+  )
+}
+
+
+function fmtNum(s) {
+  if (s == null) return '—'
+  const n = Number(s)
+  return Number.isFinite(n) ? n.toFixed(2) : '—'
+}
+
+
 /* -------------------------------------------------------------------------
    Grouping helpers
    ----------------------------------------------------------------------- */
 
 function itemTimestamp(item) {
+  if (item.ts) return item.ts
   if (item.kind === 'trade_closed') return item.trade?.closed_at
   if (item.kind === 'position_open' || item.kind === 'signal_rejected') return item.signal?.parsed_at
   if (item.kind === 'signal_unactionable') return item.posted_at

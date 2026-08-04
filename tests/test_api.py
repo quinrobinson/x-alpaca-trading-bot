@@ -100,6 +100,10 @@ def conn() -> Iterator[psycopg.Connection]:
         cur.execute("DELETE FROM events")
         cur.execute("DELETE FROM signals")
         cur.execute("DELETE FROM x_posts")
+        # The timeline is multi-source now — scanner rows left by other
+        # test modules would otherwise leak into its assertions.
+        cur.execute("DELETE FROM scanner_trades")
+        cur.execute("DELETE FROM scanner_events")
     c.commit()
     yield c
     c.close()

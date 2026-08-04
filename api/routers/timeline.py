@@ -1,17 +1,24 @@
-"""GET /timeline — unified feed of tweets + their downstream signals + trades.
+"""GET /timeline — unified "what happened" feed across both books.
 
-Returns most-recent-first list. Each entry pairs:
-  - The X post text (the tweet that triggered the chain)
-  - The parsed signal (if any) with validation outcome
-  - The resulting trade (if the signal was taken and has since closed)
+Returns a most-recent-first merge of three sources:
+  - The legacy X chain (post → signal → trade). Frozen history since the
+    X strategy's retirement (SCANNER_PROGRAM.md), kept inline as the
+    baseline record.
+  - Scanner lab detections (scanner_events) — one entry per event.
+  - Scanner equity trades (scanner_trades) — the S2 book.
+
+Every item carries `ts` (the merge key) and a globally unique `key`
+(x-/se-/st- prefixed) for frontend list identity.
 
 The frontend uses `kind` to pick a render style:
 
-    trade_closed      — taken, position closed (won/lost). Show P&L.
-    position_open     — taken, still open. (Excluded by default; the
-                        orchestrator's open position list owns that view.)
-    signal_rejected   — parsed cleanly but validator/risk refused.
-    signal_unactionable — post received but parse said "not a signal".
+    trade_closed         — X options trade closed (won/lost). Show P&L.
+    position_open        — X signal taken, still open.
+    signal_rejected      — parsed cleanly but validator/risk refused.
+    signal_unactionable  — post received but parse said "not a signal".
+    scanner_event        — a lab hypothesis logged a detection.
+    scanner_trade_open   — S2 short currently open.
+    scanner_trade_closed — S2 short closed. Show P&L.
 """
 
 from __future__ import annotations
@@ -25,12 +32,15 @@ from api.db_dep import resolve_conn
 router = APIRouter(prefix="/timeline", tags=["timeline"])
 
 
-@router.get("", summary="Unified post/signal/trade feed, most recent first")
+@router.get("", summary="Unified feed across the X archive + scanner program")
 def get_timeline(
     request: Request,
     limit: int = Query(default=50, ge=1, le=500),
     include_rejected: bool = Query(default=True),
 ) -> list[dict[str, Any]]:
+    # Each source is fetched up to `limit` rows, then merged by `ts` and
+    # cut — so the newest `limit` entries win regardless of which book
+    # they came from.
     with resolve_conn(request) as conn, conn.cursor() as cur:
         cur.execute(
             """
@@ -51,15 +61,83 @@ def get_timeline(
             """,
             (limit,),
         )
-        rows = cur.fetchall()
+        x_rows = cur.fetchall()
+        cur.execute(
+            """
+            SELECT id, scanner_name, ticker, detected_at,
+                   breakout_ts, breakout_price, failure_ts, failure_price,
+                   prior_high, volume_ratio
+            FROM scanner_events
+            ORDER BY detected_at DESC
+            LIMIT %s
+            """,
+            (limit,),
+        )
+        ev_rows = cur.fetchall()
+        cur.execute(
+            """
+            SELECT id, scanner_name, ticker, qty, entry_price, opened_at,
+                   closed_at, exit_price, gross_pnl, pnl_pct, exit_reason
+            FROM scanner_trades
+            ORDER BY COALESCE(closed_at, opened_at) DESC
+            LIMIT %s
+            """,
+            (limit,),
+        )
+        tr_rows = cur.fetchall()
 
     items: list[dict[str, Any]] = []
-    for r in rows:
+    for r in x_rows:
         item = _row_to_item(r)
         if not include_rejected and item["kind"] == "signal_rejected":
             continue
         items.append(item)
-    return items
+    items.extend(_scanner_event_item(r) for r in ev_rows)
+    items.extend(_scanner_trade_item(r) for r in tr_rows)
+
+    items.sort(key=lambda i: i.get("ts") or "", reverse=True)
+    return items[:limit]
+
+
+def _scanner_event_item(r: tuple) -> dict[str, Any]:
+    (ev_id, scanner_name, ticker, detected_at,
+     breakout_ts, breakout_price, failure_ts, failure_price,
+     prior_high, volume_ratio) = r
+    return {
+        "kind": "scanner_event",
+        "key": f"se-{ev_id}",
+        "ts": detected_at.isoformat() if detected_at else None,
+        "scanner_name": scanner_name,
+        "ticker": ticker,
+        "breakout_ts": breakout_ts.isoformat() if breakout_ts else None,
+        "breakout_price": str(breakout_price) if breakout_price is not None else None,
+        "failure_ts": failure_ts.isoformat() if failure_ts else None,
+        "failure_price": str(failure_price) if failure_price is not None else None,
+        "prior_high": str(prior_high) if prior_high is not None else None,
+        "volume_ratio": str(volume_ratio) if volume_ratio is not None else None,
+    }
+
+
+def _scanner_trade_item(r: tuple) -> dict[str, Any]:
+    (tr_id, scanner_name, ticker, qty, entry_price, opened_at,
+     closed_at, exit_price, gross_pnl, pnl_pct, exit_reason) = r
+    is_open = closed_at is None
+    ts = opened_at if is_open else closed_at
+    return {
+        "kind": "scanner_trade_open" if is_open else "scanner_trade_closed",
+        "key": f"st-{tr_id}",
+        "ts": ts.isoformat() if ts else None,
+        "scanner_name": scanner_name,
+        "ticker": ticker,
+        "qty": int(qty),
+        "entry_price": str(entry_price) if entry_price is not None else None,
+        "opened_at": opened_at.isoformat() if opened_at else None,
+        "closed_at": closed_at.isoformat() if closed_at else None,
+        "exit_price": str(exit_price) if exit_price is not None else None,
+        "gross_pnl": str(gross_pnl) if gross_pnl is not None else None,
+        "pnl_pct": str(pnl_pct) if pnl_pct is not None else None,
+        "exit_reason": exit_reason,
+    }
 
 
 def _row_to_item(r: tuple) -> dict[str, Any]:
@@ -114,8 +192,17 @@ def _row_to_item(r: tuple) -> dict[str, Any]:
     else:
         kind = "signal_rejected"
 
+    # ts drives the cross-source merge: a closed trade sorts by its close
+    # (when it became news), otherwise the post's own timestamp.
+    if trade is not None and t_closed_at is not None:
+        ts = t_closed_at
+    else:
+        ts = x_posted_at or x_received_at
+
     return {
         "kind": kind,
+        "key": f"x-{x_id}",
+        "ts": ts.isoformat() if ts else None,
         "x_post_id": x_id,
         "posted_at": x_posted_at.isoformat() if x_posted_at else None,
         "received_at": x_received_at.isoformat() if x_received_at else None,

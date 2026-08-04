@@ -23,6 +23,25 @@ export default function Performance() {
 
   return (
     <div className="space-y-4">
+      {/* Retirement banner — these stats are the closed X chapter. */}
+      <section
+        className="rounded-card px-4 py-3 text-xs"
+        style={{
+          background: 'var(--card)',
+          border: '1px dashed var(--border)',
+          color: 'var(--fg-dim)',
+        }}
+      >
+        <span className="mono-label" style={{ fontSize: 10, letterSpacing: '0.16em' }}>
+          Retired strategy · historical record
+        </span>
+        <p className="mt-1 leading-snug">
+          The X-signal strategy was retired 2026-08-04 — these {tradeCount}{' '}
+          trades are its complete record, kept as the baseline. The live
+          program's numbers are on the Scanner tab.
+        </p>
+      </section>
+
       {/* Equity curve — the big chart up top */}
       <section className="card p-5">
         <div className="flex items-baseline justify-between mb-3">

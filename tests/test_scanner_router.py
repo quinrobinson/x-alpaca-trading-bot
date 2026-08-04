@@ -212,3 +212,68 @@ def test_trades_endpoint_empty_book(conn: psycopg.Connection) -> None:
         body = client.get("/api/scanner/trades").json()
     assert body["trades"] == []
     assert body["stats"]["n_closed"] == 0
+
+
+# ---- /timeline (scanner integration) --------------------------------------
+
+def test_timeline_merges_scanner_items(conn: psycopg.Connection) -> None:
+    """The feed interleaves scanner events and S2 trades with the X
+    archive, newest first, each with a unique key."""
+    with conn.cursor() as cur:
+        cur.execute("DELETE FROM signal_price_tracks")
+        cur.execute("DELETE FROM indicator_snapshots")
+        cur.execute("DELETE FROM trades")
+        cur.execute("DELETE FROM fills")
+        cur.execute("DELETE FROM orders")
+        cur.execute("DELETE FROM signals")
+        cur.execute("DELETE FROM x_posts")
+    conn.commit()
+
+    _seed_event(conn, scanner="vwap_reject", ticker="RIVN")
+
+    opened = datetime(2026, 8, 4, 14, 30, tzinfo=timezone.utc)
+    open_id = journal.insert_scanner_trade(
+        conn, scanner_name="failed_breakout", ticker="RIVN",
+        event_day=date(2026, 8, 4), qty=59, entry_price=Decimal("16.69"),
+        opened_at=opened, entry_order_id=None, stop_order_id=None,
+    )
+    closed_id = journal.insert_scanner_trade(
+        conn, scanner_name="failed_breakout", ticker="SOFI",
+        event_day=date(2026, 8, 4), qty=50, entry_price=Decimal("16.80"),
+        opened_at=opened, entry_order_id=None, stop_order_id=None,
+    )
+    journal.close_scanner_trade(
+        conn, trade_id=closed_id, closed_at=opened.replace(hour=15),
+        exit_price=Decimal("16.70"), exit_reason="time_exit",
+        gross_pnl=Decimal("5.00"), pnl_pct=Decimal("0.0060"), exit_order_id=None,
+    )
+
+    app = create_app(conn=conn, orchestrator=_FakeOrch())
+    with TestClient(app) as client:
+        items = client.get("/api/timeline").json()
+
+    kinds = [i["kind"] for i in items]
+    assert "scanner_event" in kinds
+    assert "scanner_trade_open" in kinds
+    assert "scanner_trade_closed" in kinds
+
+    keys = [i["key"] for i in items]
+    assert len(keys) == len(set(keys))          # globally unique
+    assert f"st-{open_id}" in keys
+
+    ts_list = [i["ts"] for i in items if i["ts"]]
+    assert ts_list == sorted(ts_list, reverse=True)  # newest first
+
+    closed = next(i for i in items if i["kind"] == "scanner_trade_closed")
+    assert closed["ticker"] == "SOFI"
+    assert Decimal(closed["gross_pnl"]) == Decimal("5.00")
+    assert closed["exit_reason"] == "time_exit"
+
+
+def test_timeline_scanner_only_respects_limit(conn: psycopg.Connection) -> None:
+    for i in range(5):
+        _seed_event(conn, scanner="failed_breakout", ticker=f"T{i}")
+    app = create_app(conn=conn, orchestrator=_FakeOrch())
+    with TestClient(app) as client:
+        items = client.get("/api/timeline?limit=3").json()
+    assert len(items) == 3
