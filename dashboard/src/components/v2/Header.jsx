@@ -113,8 +113,10 @@ function SystemStatus({
   wsStatus, health, performance, killSwitches,
   xDisabled, startingEquity, dailyLossKillPct,
 }) {
+  // The X strategy is retired (SCANNER_PROGRAM.md) — a disabled stream
+  // is the intended steady state, so render it neutral, not as a warning.
   const xLabel = xDisabled
-    ? { text: 'disabled', tone: 'text-warning' }
+    ? { text: 'off (retired)', tone: 'text-fg-dim' }
     : killSwitches.includes('x_stream_disconnected')
     ? { text: 'down', tone: 'text-negative' }
     : { text: 'connected', tone: 'text-positive' }
