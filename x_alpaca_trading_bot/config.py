@@ -115,6 +115,10 @@ class Config:
     # 2026-07-30; late-morning failures showed no edge in the live sample).
     # Env format: SCANNER_BREAKOUT_CUTOFF=HH:MM.
     scanner_breakout_cutoff: time | None = None
+    # Which lab hypotheses run (SCANNER_PROGRAM.md Phase S1). None means
+    # all registered in scanners.lab.HYPOTHESES. Comma-separated names;
+    # unknown names fail startup (validated in main via resolve_hypotheses).
+    scanner_hypotheses: tuple[str, ...] | None = None
 
     # Operator switches
     disable_x_stream: bool = False        # skip X stream connect + suppress x_stream kill switch
@@ -199,6 +203,14 @@ class Config:
             ),
             scanner_breakout_cutoff=_parse_cutoff(
                 os.environ.get("SCANNER_BREAKOUT_CUTOFF", "")
+            ),
+            scanner_hypotheses=(
+                tuple(
+                    h.strip() for h in os.environ["SCANNER_HYPOTHESES"].split(",")
+                    if h.strip()
+                )
+                if os.environ.get("SCANNER_HYPOTHESES", "").strip()
+                else None
             ),
             disable_x_stream=os.environ.get("DISABLE_X_STREAM", "").lower() in ("1", "true", "yes"),
         )

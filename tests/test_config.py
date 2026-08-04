@@ -187,6 +187,29 @@ def test_scanner_breakout_cutoff_parsed(
     assert cfg.scanner_breakout_cutoff == time(12, 0)
 
 
+def test_scanner_hypotheses_parsed(
+    monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    _apply_env(monkeypatch, _MINIMAL_ENV)
+    monkeypatch.setenv("SCANNER_HYPOTHESES", "failed_breakout, gap_fade")
+    empty_env = tmp_path / "empty.env"
+    empty_env.write_text("")
+    cfg = Config.load(empty_env)
+    assert cfg.scanner_hypotheses == ("failed_breakout", "gap_fade")
+
+
+def test_scanner_hypotheses_default_none(
+    monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    """Unset means None — scanners.lab runs every registered hypothesis."""
+    _apply_env(monkeypatch, _MINIMAL_ENV)
+    monkeypatch.delenv("SCANNER_HYPOTHESES", raising=False)
+    empty_env = tmp_path / "empty.env"
+    empty_env.write_text("")
+    cfg = Config.load(empty_env)
+    assert cfg.scanner_hypotheses is None
+
+
 def test_scanner_breakout_cutoff_malformed_raises(
     monkeypatch: pytest.MonkeyPatch, tmp_path
 ) -> None:

@@ -301,22 +301,29 @@ class Orchestrator:
         self._stream_listener: Any = None
         self._lock = threading.Lock()
 
-        # Failed-breakout scanner — Phase A is log-only. Built lazily here
-        # so test fixtures that don't enable it pay nothing. The thread is
-        # started in run() and torn down via shutdown_event in the loop.
+        # Scanner lab — Phase S1 of SCANNER_PROGRAM.md, log-only. All
+        # enabled hypotheses run in one shared data pass. Built lazily
+        # here so test fixtures that don't enable it pay nothing. The
+        # thread is started in run() and torn down via shutdown_event.
         self._scanner_thread: threading.Thread | None = None
         self._scanner: Any | None = None
         if self._cfg.scanner_enabled:
             from x_alpaca_trading_bot.scanners.failed_breakout import (
                 DEFAULT_UNIVERSE,
-                DataServiceBarSource,
-                FailedBreakoutScanner,
             )
-            self._scanner = FailedBreakoutScanner(
+            from x_alpaca_trading_bot.scanners.lab import (
+                LabDataBarSource,
+                ScannerLab,
+                resolve_hypotheses,
+            )
+            self._scanner = ScannerLab(
                 universe=self._cfg.scanner_universe or DEFAULT_UNIVERSE,
-                bar_source=DataServiceBarSource(self._ds),
+                bar_source=LabDataBarSource(self._ds),
                 record_event=self._record_scanner_event,
-                breakout_cutoff=self._cfg.scanner_breakout_cutoff,
+                hypotheses=resolve_hypotheses(
+                    self._cfg.scanner_hypotheses,
+                    failed_breakout_cutoff=self._cfg.scanner_breakout_cutoff,
+                ),
             )
 
     # ---- Runtime config snapshot --------------------------------------
